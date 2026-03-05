@@ -1,0 +1,36 @@
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  allowed_chat_ids:
+    - ${TELEGRAM_OWNER_CHAT_ID}
+  owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
+
+models:
+  default:
+    provider: deepseek
+    model: deepseek-chat
+    api_key: ${DEEPSEEK_API_KEY}
+    max_tokens: 4096
+    base_url: https://api.deepseek.com
+  reasoner:
+    provider: deepseek
+    model: deepseek-reasoner
+    api_key: ${DEEPSEEK_API_KEY}
+    max_tokens: 8192
+    base_url: https://api.deepseek.com
+  flash_lite:
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 2048
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  multimodal:
+    provider: gemini
+    model: gemini-3-flash-preview
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 4096
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+
+routing:
+  default: default
+  fallback: flash_lite
+  compaction_model: default

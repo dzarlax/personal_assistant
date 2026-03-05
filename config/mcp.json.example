@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "personal-memory": {
+      "url": "${MEMORY_URL}",
+      "headers": {
+        "Authorization": "Basic ${MEMORY_BASIC_AUTH}"
+      }
+    },
+    "health-dashboard": {
+      "url": "${HEALTH_URL}",
+      "headers": {
+        "X-API-Key": "${HEALTH_API_KEY}"
+      }
+    }
+  }
+}
