@@ -13,6 +13,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Context compaction** — auto-summarises old history to stay within token limits
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
 - **Access control** — allowlist by chat ID + owner-only enforcement
+- **Date/time awareness** — current date and time injected into every request; timezone set via `TZ` env var
 
 ## Requirements
 

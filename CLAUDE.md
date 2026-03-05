@@ -54,7 +54,7 @@ flowchart LR
 - Auth via generic `headers` map (Claude Desktop format)
 
 **`internal/agent`** — agentic loop.
-- `Process(ctx, chatID, llm.Message, onToolCall)` — accepts full `llm.Message` to support multimodal
+- `Process(ctx, chatID, llm.Message, onToolCall)` — prepends `"Current date and time: ..."` to the system prompt on every call using `time.Now()` (respects `TZ` env var set in Docker)
 - `compact.go` — triggered at 60K chars; snaps boundary to user message; marks old rows `is_compacted=1`, inserts summary as `is_summary=1`
 
 **`internal/telegram`** — Telegram Bot API handler.
@@ -67,7 +67,7 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `TELEGRAM_OWNER_CHAT_ID` — auto-loaded by Docker Compose from project root |
+| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`) — auto-loaded by Docker Compose from project root |
 | `config/config.yaml` | Models (all require `base_url`), routing, Telegram IDs — `${ENV_VAR}` substitution |
 | `config/mcp.json` | MCP servers in Claude Desktop format — `allowTools`, `denyTools` per server |
 | `config/system_prompt.md` | System prompt injected on every LLM request |
