@@ -7,12 +7,14 @@ on:
       - '**.md'
       - 'docs/**'
       - 'docker-compose.yml'
+      - 'config/**'
   pull_request:
     branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
       - 'docker-compose.yml'
+      - 'config/**'
 
 jobs:
   build:
