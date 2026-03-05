@@ -59,6 +59,8 @@ cp config/mcp.json.example config/mcp.json
 
 cp config/system_prompt.md.example config/system_prompt.md
 # personalise the assistant
+
+mkdir -p data
 ```
 
 **Get your Telegram chat ID:** send `/start` to [@userinfobot](https://t.me/userinfobot).
