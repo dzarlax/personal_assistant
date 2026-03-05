@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"telegram-agent/internal/llm"
@@ -47,7 +48,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 
 	var tools []llm.Tool
 	if a.mcp != nil {
-		tools = a.mcp.LLMTools()
+		tools = a.mcp.LLMToolsForQuery(ctx, messageText(userMsg))
 	}
 
 	for i := 0; i < maxToolIterations; i++ {
@@ -130,4 +131,18 @@ func (a *Agent) ListTools() []ToolInfo {
 		result[i] = ToolInfo{Name: t.Name, ServerName: t.ServerName}
 	}
 	return result
+}
+
+// messageText extracts plain text from a message (handles both Content and Parts).
+func messageText(msg llm.Message) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	var sb strings.Builder
+	for _, p := range msg.Parts {
+		if p.Type == "text" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
 }

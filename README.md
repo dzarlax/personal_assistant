@@ -8,7 +8,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
 - **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically
 - **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
-- **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering
+- **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering; vector similarity filtering selects only the most relevant tools per request
 - **Persistent memory** — SQLite-backed conversation history with automatic session management
 - **Context compaction** — auto-summarises old history to stay within token limits
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
@@ -20,7 +20,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - Go 1.24+ (or Docker)
 - [Telegram Bot Token](https://t.me/BotFather)
 - [DeepSeek API key](https://platform.deepseek.com)
-- Gemini API key (optional — for fallback and image support)
+- Gemini API key (optional — for fallback, image support, and tool filtering)
 
 ## Quick start (NAS / Pi / server)
 
@@ -131,6 +131,18 @@ models:
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  embedding:
+    provider: gemini
+    model: gemini-embedding-001
+    api_key: ${GEMINI_API_KEY}
+
+routing:
+  default: default
+  fallback: flash_lite
+  compaction_model: default
+
+tool_filter:
+  top_k: 20   # top-K tools selected per request via vector similarity; 0 = disabled
 ```
 
 ### `config/mcp.json`
@@ -197,6 +209,7 @@ flowchart TD
     Router["LLM Router"]
     MCP["MCP Client"]
     Store[("SQLite")]
+    Emb["Gemini Embedding\ngemini-embedding-001"]
 
     subgraph LLMs ["LLM Providers"]
         DS["DeepSeek Chat"]
@@ -215,7 +228,9 @@ flowchart TD
     Handler --> Agent
     Agent <--> Store
     Agent --> Router
-    Agent <-->|"tools/call"| MCP
+    Agent -->|"query embed\ntop-K filter"| MCP
+    MCP <-->|"embed tools\nat startup"| Emb
+    MCP <-->|"tools/call"| Servers
     Router --> DS
     Router --> DSR
     Router --> GL

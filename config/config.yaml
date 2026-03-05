@@ -29,8 +29,15 @@ models:
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  embedding:
+    provider: gemini
+    model: gemini-embedding-001
+    api_key: ${GEMINI_API_KEY}
 
 routing:
   default: default
   fallback: flash_lite
   compaction_model: default
+
+tool_filter:
+  top_k: 20

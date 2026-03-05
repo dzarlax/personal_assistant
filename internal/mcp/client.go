@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -19,10 +20,14 @@ import (
 
 // Client manages connections to multiple MCP servers.
 type Client struct {
-	servers     map[string]*server
-	tools       []Tool
-	toolServers map[string]string // tool name → server name
-	logger      *slog.Logger
+	servers         map[string]*server
+	tools           []Tool
+	toolServers     map[string]string // tool name → server name
+	logger          *slog.Logger
+	embeddingAPIKey   string
+	embeddingModel    string
+	topK              int
+	embeddingsReady   bool
 }
 
 type server struct {
@@ -42,6 +47,7 @@ type Tool struct {
 	Description string
 	InputSchema json.RawMessage
 	ServerName  string
+	Embedding   []float32
 }
 
 func NewClient(configs map[string]config.MCPServerConfig, logger *slog.Logger) *Client {
@@ -100,6 +106,77 @@ func (c *Client) Initialize(ctx context.Context) {
 		}
 		c.logger.Info("mcp server connected", "server", name, "tools", allowed, "total", len(tools))
 	}
+}
+
+// EnableEmbeddings configures vector-based tool filtering.
+// Must be called before EmbedTools.
+func (c *Client) EnableEmbeddings(apiKey, model string, topK int) {
+	c.embeddingAPIKey = apiKey
+	c.embeddingModel = model
+	c.topK = topK
+}
+
+// EmbedTools computes and caches embeddings for all tools.
+// Should be called once after Initialize.
+func (c *Client) EmbedTools(ctx context.Context) {
+	if c.embeddingAPIKey == "" {
+		return
+	}
+	ok := 0
+	for i := range c.tools {
+		text := c.tools[i].Name + ": " + c.tools[i].Description
+		emb, err := embed(ctx, c.embeddingAPIKey, c.embeddingModel, text)
+		if err != nil {
+			c.logger.Warn("failed to embed tool", "tool", c.tools[i].Name, "err", err)
+			continue
+		}
+		c.tools[i].Embedding = emb
+		ok++
+	}
+	if ok == len(c.tools) {
+		c.embeddingsReady = true
+		c.logger.Info("tool embeddings ready", "tools", ok)
+	} else {
+		c.logger.Warn("some tool embeddings failed, disabling filtering", "ok", ok, "total", len(c.tools))
+	}
+}
+
+// LLMToolsForQuery returns the top-K most relevant tools for the given query.
+// Falls back to all tools if embeddings are not ready or topK >= total tools.
+func (c *Client) LLMToolsForQuery(ctx context.Context, query string) []llm.Tool {
+	if !c.embeddingsReady || c.topK <= 0 || c.topK >= len(c.tools) || query == "" {
+		return c.LLMTools()
+	}
+
+	queryEmb, err := embed(ctx, c.embeddingAPIKey, c.embeddingModel, query)
+	if err != nil {
+		c.logger.Warn("query embedding failed, using all tools", "err", err)
+		return c.LLMTools()
+	}
+
+	type scored struct {
+		tool  Tool
+		score float64
+	}
+	candidates := make([]scored, len(c.tools))
+	for i, t := range c.tools {
+		candidates[i] = scored{t, cosineSimilarity(queryEmb, t.Embedding)}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	result := make([]llm.Tool, 0, c.topK)
+	for i := 0; i < c.topK; i++ {
+		t := candidates[i].tool
+		result = append(result, llm.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	c.logger.Debug("tool filter applied", "query_len", len(query), "selected", len(result), "total", len(c.tools))
+	return result
 }
 
 // LLMTools returns tools in the format expected by the LLM provider.

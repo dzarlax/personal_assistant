@@ -9,9 +9,14 @@ import (
 )
 
 type Config struct {
-	Telegram TelegramConfig `yaml:"telegram"`
-	Models   ModelsConfig   `yaml:"models"`
-	Routing  RoutingConfig  `yaml:"routing"`
+	Telegram   TelegramConfig   `yaml:"telegram"`
+	Models     ModelsConfig     `yaml:"models"`
+	Routing    RoutingConfig    `yaml:"routing"`
+	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
+}
+
+type ToolFilterConfig struct {
+	TopK int `yaml:"top_k"` // 0 = disabled
 }
 
 type MCPServerConfig struct {
@@ -40,6 +45,7 @@ type ModelsConfig struct {
 	Reasoner   ModelConfig `yaml:"reasoner"`
 	FlashLite  ModelConfig `yaml:"flash_lite"`
 	Multimodal ModelConfig `yaml:"multimodal"`
+	Embedding  ModelConfig `yaml:"embedding"`
 }
 
 type RoutingConfig struct {

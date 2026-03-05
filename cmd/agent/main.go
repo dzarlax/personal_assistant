@@ -98,6 +98,13 @@ func main() {
 		initCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		mcpClient.Initialize(initCtx)
 		cancel()
+
+		if cfg.ToolFilter.TopK > 0 && cfg.Models.Embedding.APIKey != "" {
+			mcpClient.EnableEmbeddings(cfg.Models.Embedding.APIKey, cfg.Models.Embedding.Model, cfg.ToolFilter.TopK)
+			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			mcpClient.EmbedTools(embedCtx)
+			embedCancel()
+		}
 	}
 
 	ag := agent.New(router, s, mcpClient, compacter, string(sysPromptBytes), logger)

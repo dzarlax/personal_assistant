@@ -52,6 +52,7 @@ flowchart LR
 - Connects on startup (`initialize` → `tools/list`). Supports JSON and SSE responses.
 - Per-server tool filtering: `allowTools` (allowlist) checked after `denyTools` (blocklist)
 - Auth via generic `headers` map (Claude Desktop format)
+- **Vector tool filtering**: `EnableEmbeddings(apiKey, model, topK)` + `EmbedTools(ctx)` at startup computes Gemini embeddings for all tools; `LLMToolsForQuery(ctx, query)` returns top-K most relevant tools per request via cosine similarity. Falls back to all tools if embeddings unavailable or query is empty.
 
 **`internal/agent`** — agentic loop.
 - `Process(ctx, chatID, llm.Message, onToolCall)` — prepends `"Current date and time: ..."` to the system prompt on every call using `time.Now()` (respects `TZ` env var set in Docker)
@@ -68,7 +69,7 @@ flowchart LR
 | File | Purpose |
 |---|---|
 | `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`) — auto-loaded by Docker Compose from project root |
-| `config/config.yaml` | Models (all require `base_url`), routing, Telegram IDs — `${ENV_VAR}` substitution |
+| `config/config.yaml` | Models (all require `base_url`; `embedding` model is exception — no `base_url`/`max_tokens`), routing, tool_filter, Telegram IDs — `${ENV_VAR}` substitution |
 | `config/mcp.json` | MCP servers in Claude Desktop format — `allowTools`, `denyTools` per server |
 | `config/system_prompt.md` | System prompt injected on every LLM request |
 
@@ -80,6 +81,15 @@ Paths are hardcoded in `main.go` as `config/config.yaml`, `config/system_prompt.
 2. **Reasoner** (DeepSeek Reasoner) — `/model reasoner` or keyword in message
 3. **Primary** (DeepSeek Chat) — default
 4. **Fallback** (Gemini 3.1 Flash Lite) — primary returns 5xx/429/network error
+
+### Tool filtering (vector similarity)
+
+Configured via `tool_filter.top_k` in `config.yaml` and `models.embedding` (Gemini `gemini-embedding-001`).
+
+- At startup: embeddings computed for all tools (`name + ": " + description`) and cached in memory
+- Per request: user message embedded → cosine similarity → top-K tools sent to LLM
+- Fallback to all tools if: embeddings not ready, `top_k=0`, `top_k >= total tools`, or embed API error
+- `top_k: 0` disables filtering entirely
 
 ### SQLite schema notes
 
