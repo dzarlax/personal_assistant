@@ -38,6 +38,7 @@ routing:
   default: default
   fallback: flash_lite
   compaction_model: default
+  classifier_min_length: 100
 
 tool_filter:
   top_k: 20

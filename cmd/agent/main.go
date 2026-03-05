@@ -66,7 +66,7 @@ func main() {
 		}
 	}
 
-	router := llm.NewRouter(primary, fallback, reasoner, multimodal)
+	router := llm.NewRouter(primary, fallback, reasoner, multimodal, cfg.Routing.ClassifierMinLength)
 
 	// Init store (SQLite if data dir exists, otherwise memory)
 	var s store.Store

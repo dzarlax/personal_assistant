@@ -49,9 +49,10 @@ type ModelsConfig struct {
 }
 
 type RoutingConfig struct {
-	Default         string `yaml:"default"`
-	Fallback        string `yaml:"fallback"`
-	CompactionModel string `yaml:"compaction_model"`
+	Default             string `yaml:"default"`
+	Fallback            string `yaml:"fallback"`
+	CompactionModel     string `yaml:"compaction_model"`
+	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = disabled
 }
 
 // LoadMCPServers loads mcp.json in Claude Desktop format.
