@@ -1,6 +1,7 @@
 services:
   agent:
-    build: .
+    image: dzarlax/personal-assistant:latest
+    # build: .   # uncomment to build locally instead
     restart: unless-stopped
     network_mode: bridge
     environment:

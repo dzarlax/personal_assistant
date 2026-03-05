@@ -19,7 +19,33 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - [DeepSeek API key](https://platform.deepseek.com)
 - Gemini API key (optional — for fallback and image support)
 
-## Setup
+## Quick start (NAS / Pi / server)
+
+No source code needed — just pull the pre-built image:
+
+```bash
+# 1. Create the directory structure
+mkdir -p my-assistant/config my-assistant/data
+cd my-assistant
+
+# 2. Download compose file
+curl -O https://raw.githubusercontent.com/dzarlax/personal-assistant/main/docker-compose.yml
+
+# 3. Create config files
+curl -o config/config.yaml https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/config.yaml
+curl -o config/system_prompt.md https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/system_prompt.md.example
+curl -o config/mcp.json https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/mcp.json.example
+curl -o .env https://raw.githubusercontent.com/dzarlax/personal-assistant/main/.env.example
+
+# 4. Fill in secrets
+nano .env
+
+# 5. Start
+docker compose up -d
+docker compose logs -f
+```
+
+## Setup (from source)
 
 ```bash
 cp .env.example .env
@@ -28,7 +54,8 @@ cp .env.example .env
 cp config/mcp.json.example config/mcp.json
 # configure MCP servers (optional)
 
-# edit config/system_prompt.md to personalise the assistant
+cp config/system_prompt.md.example config/system_prompt.md
+# personalise the assistant
 ```
 
 **Get your Telegram chat ID:** send `/start` to [@userinfobot](https://t.me/userinfobot).
@@ -40,7 +67,7 @@ cp config/mcp.json.example config/mcp.json
 make run
 ```
 
-**Docker:**
+**Docker (from source):**
 ```bash
 make docker-up   # copies missing example files, then starts
 make logs
