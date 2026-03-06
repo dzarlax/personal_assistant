@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sashabaranov/go-openai"
 )
 
 const classifierPrompt = `Does this message require deep step-by-step reasoning, mathematical proof, or complex multi-step analysis? Reply with only 'yes' or 'no'.`
@@ -194,9 +193,9 @@ func isUnavailable(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	var apiErr *openai.APIError
+	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.HTTPStatusCode >= 500 || apiErr.HTTPStatusCode == 429
+		return apiErr.StatusCode >= 500 || apiErr.StatusCode == 429
 	}
 	return true // network error — try fallback
 }

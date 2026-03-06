@@ -1,39 +1,51 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 
-	"github.com/sashabaranov/go-openai"
 	"telegram-agent/internal/config"
 )
 
+// APIError represents an HTTP-level error from an OpenAI-compatible API.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("api error (HTTP %d): %s", e.StatusCode, e.Message)
+}
+
 type openAICompatProvider struct {
-	client    *openai.Client
+	baseURL   string
+	apiKey    string
 	model     string
 	maxTokens int
 	provName  string
-	vision    bool // if false, image_url parts in history are stripped
+	vision    bool // if false, image_url parts in history are replaced with [image]
 }
 
 func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string, vision ...bool) (*openAICompatProvider, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("%s: api_key is required", providerName)
 	}
-	ocfg := openai.DefaultConfig(cfg.APIKey)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	ocfg.BaseURL = baseURL
-
 	maxTokens := cfg.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 4096
 	}
 	p := &openAICompatProvider{
-		client:    openai.NewClientWithConfig(ocfg),
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		apiKey:    cfg.APIKey,
 		model:     cfg.Model,
 		maxTokens: maxTokens,
 		provName:  providerName,
@@ -44,26 +56,118 @@ func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string
 	return p, nil
 }
 
+// --- Raw JSON types for full serialization control ---
+
+type rawChatRequest struct {
+	Model     string       `json:"model"`
+	Messages  []rawMessage `json:"messages"`
+	MaxTokens int          `json:"max_tokens,omitempty"`
+	Tools     []rawTool    `json:"tools,omitempty"`
+}
+
+// rawMessage uses `any` for Content so we can serialize null, string, or array.
+type rawMessage struct {
+	Role       string        `json:"role"`
+	Content    any           `json:"content"` // nil → null, string, or []rawContentPart
+	ToolCalls  []rawToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+}
+
+type rawContentPart struct {
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *rawImageURL `json:"image_url,omitempty"`
+}
+
+type rawImageURL struct {
+	URL string `json:"url"`
+}
+
+type rawToolCall struct {
+	ID       string          `json:"id"`
+	Type     string          `json:"type"`
+	Function rawFunctionCall `json:"function"`
+}
+
+type rawFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type rawTool struct {
+	Type     string             `json:"type"`
+	Function rawToolFunctionDef `json:"function"`
+}
+
+type rawToolFunctionDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+type rawChatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content   string        `json:"content"`
+			ToolCalls []rawToolCall `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+}
+
 func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
-	msgs := buildMessages(messages, systemPrompt, p.vision)
-	req := openai.ChatCompletionRequest{
+	rawMsgs := buildMessages(messages, systemPrompt, p.vision)
+	req := rawChatRequest{
 		Model:     p.model,
-		Messages:  msgs,
+		Messages:  rawMsgs,
 		MaxTokens: p.maxTokens,
 	}
 	if len(tools) > 0 {
 		req.Tools = buildTools(tools)
 	}
 
-	resp, err := p.client.CreateChatCompletion(ctx, req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: marshal request: %w", p.provName, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: create request: %w", p.provName, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", p.provName, err)
 	}
-	if len(resp.Choices) == 0 {
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: read response: %w", p.provName, err)
+	}
+
+	var chatResp rawChatResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return Response{}, fmt.Errorf("%s: parse response: %w", p.provName, err)
+	}
+
+	if chatResp.Error != nil {
+		return Response{}, &APIError{StatusCode: httpResp.StatusCode, Message: chatResp.Error.Message}
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return Response{}, &APIError{StatusCode: httpResp.StatusCode, Message: string(respBody)}
+	}
+	if len(chatResp.Choices) == 0 {
 		return Response{}, fmt.Errorf("%s: empty response", p.provName)
 	}
 
-	choice := resp.Choices[0].Message
+	choice := chatResp.Choices[0].Message
 	result := Response{Content: choice.Content}
 	for _, tc := range choice.ToolCalls {
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
@@ -79,50 +183,50 @@ func (p *openAICompatProvider) Name() string {
 	return p.provName + "/" + p.model
 }
 
-func buildMessages(messages []Message, systemPrompt string, vision bool) []openai.ChatCompletionMessage {
-	msgs := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
+// buildMessages converts internal messages to raw JSON messages.
+// Assistant messages with tool_calls and empty content use null (not omitted).
+func buildMessages(messages []Message, systemPrompt string, vision bool) []rawMessage {
+	msgs := make([]rawMessage, 0, len(messages)+1)
 	if systemPrompt != "" {
-		msgs = append(msgs, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
+		msgs = append(msgs, rawMessage{
+			Role:    "system",
 			Content: systemPrompt,
 		})
 	}
 	for _, m := range messages {
-		msg := openai.ChatCompletionMessage{
+		msg := rawMessage{
 			Role:       m.Role,
 			ToolCallID: m.ToolCallID,
 		}
 		if len(m.Parts) > 0 {
-			for _, p := range m.Parts {
-				switch p.Type {
+			var parts []rawContentPart
+			for _, part := range m.Parts {
+				switch part.Type {
 				case "text":
-					msg.MultiContent = append(msg.MultiContent, openai.ChatMessagePart{
-						Type: openai.ChatMessagePartTypeText,
-						Text: p.Text,
-					})
+					parts = append(parts, rawContentPart{Type: "text", Text: part.Text})
 				case "image_url":
 					if !vision {
-						// Non-vision provider: replace image with a text placeholder
-						msg.MultiContent = append(msg.MultiContent, openai.ChatMessagePart{
-							Type: openai.ChatMessagePartTypeText,
-							Text: "[image]",
-						})
-					} else if p.ImageURL != nil {
-						msg.MultiContent = append(msg.MultiContent, openai.ChatMessagePart{
-							Type:     openai.ChatMessagePartTypeImageURL,
-							ImageURL: &openai.ChatMessageImageURL{URL: p.ImageURL.URL},
+						parts = append(parts, rawContentPart{Type: "text", Text: "[image]"})
+					} else if part.ImageURL != nil {
+						parts = append(parts, rawContentPart{
+							Type:     "image_url",
+							ImageURL: &rawImageURL{URL: part.ImageURL.URL},
 						})
 					}
 				}
 			}
+			msg.Content = parts
+		} else if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.Content == "" {
+			// Use null instead of omitting — providers reject messages with no content field.
+			msg.Content = nil
 		} else {
 			msg.Content = m.Content
 		}
 		for _, tc := range m.ToolCalls {
-			msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, rawToolCall{
 				ID:   tc.ID,
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
+				Type: "function",
+				Function: rawFunctionCall{
 					Name:      tc.Name,
 					Arguments: tc.Arguments,
 				},
@@ -133,9 +237,8 @@ func buildMessages(messages []Message, systemPrompt string, vision bool) []opena
 	return msgs
 }
 
-
-func buildTools(tools []Tool) []openai.Tool {
-	result := make([]openai.Tool, 0, len(tools))
+func buildTools(tools []Tool) []rawTool {
+	result := make([]rawTool, 0, len(tools))
 	for _, t := range tools {
 		var params any
 		if len(t.InputSchema) > 0 {
@@ -143,9 +246,9 @@ func buildTools(tools []Tool) []openai.Tool {
 		} else {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
-		result = append(result, openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
+		result = append(result, rawTool{
+			Type: "function",
+			Function: rawToolFunctionDef{
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  params,
