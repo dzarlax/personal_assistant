@@ -4,24 +4,27 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 ## Features
 
-- **Multi-model routing** — DeepSeek Chat as primary; Gemini Flash Lite as automatic fallback on errors or rate limits; DeepSeek Reasoner for complex tasks; Gemini Flash for images; Qwen models optional
+- **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner
+- **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
+- **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
+- **Reply context** — replying to a bot message or your own message prepends the quoted text so the LLM has full context
 - **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically
 - **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
 - **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering; vector similarity filtering selects only the most relevant tools per request
+- **Configurable embeddings** — shared embedding layer used for both tool filtering and conversation memory; supports Gemini (default), HuggingFace TEI, or any OpenAI-compatible endpoint
 - **Persistent memory** — SQLite-backed conversation history with automatic session management
-- **Context compaction** — auto-summarises old history to stay within token limits
+- **Token-based compaction** — auto-summarises old history when estimated token count exceeds threshold; images count as 1000 tokens each
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
 - **Access control** — allowlist by chat ID + owner-only enforcement
 - **Date/time awareness** — current date and time injected into every request; timezone set via `TZ` env var
+- **Conversation stats** — `/stats` shows message count, character count, last compaction, and last activity
 
 ## Requirements
 
 - Go 1.24+ (or Docker)
 - [Telegram Bot Token](https://t.me/BotFather)
-- [DeepSeek API key](https://platform.deepseek.com)
-- Gemini API key (optional — for fallback, image support, and tool filtering)
-- Qwen API key (optional — for classifier and additional models)
+- At least one LLM API key (DeepSeek, Gemini, or Qwen)
 
 ## Quick start (NAS / Pi / server)
 
@@ -91,6 +94,7 @@ config/
   system_prompt.md     # personalise the assistant here
   mcp.json             # MCP servers — not in git
   mcp.json.example     # template
+  routing.json         # runtime routing overrides — auto-created
 data/                  # SQLite DB — not in git
 ```
 
@@ -98,7 +102,7 @@ data/                  # SQLite DB — not in git
 
 ### `config/config.yaml`
 
-All values support `${ENV_VAR}` substitution. Every model requires an explicit `base_url`.
+All values support `${ENV_VAR}` substitution. Every model requires an explicit `base_url`. Any model can be set as `routing.default` — it is not hardcoded to a specific provider.
 
 ```yaml
 telegram:
@@ -122,20 +126,35 @@ models:
     base_url: https://api.deepseek.com
   gemini-flash-lite:
     provider: gemini
-    model: gemini-3.1-flash-lite-preview
+    model: gemini-2.0-flash-lite
     api_key: ${GEMINI_API_KEY}
     max_tokens: 2048
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
   gemini-flash:
     provider: gemini
-    model: gemini-3-flash-preview
+    model: gemini-2.0-flash
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+
+  # Embedding model — used for both MCP tool filtering and conversation memory.
+  # Option 1: Gemini (default)
   embedding:
     provider: gemini
     model: gemini-embedding-001
     api_key: ${GEMINI_API_KEY}
+  # Option 2: HuggingFace Text Embeddings Inference
+  # embedding:
+  #   provider: hf-tei
+  #   base_url: https://embed.yourdomain.com
+  #   api_key: ${EMBED_API_KEY}   # "user:password" for Basic Auth
+  # Option 3: OpenAI-compatible endpoint
+  # embedding:
+  #   provider: openai
+  #   base_url: https://api.openai.com
+  #   model: text-embedding-3-small
+  #   api_key: ${OPENAI_API_KEY}
+
   qwen-flash:             # optional — used as classifier by default
     provider: qwen
     model: qwen3.5-flash
@@ -156,12 +175,12 @@ models:
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 routing:
-  default: deepseek
+  default: deepseek          # primary model — can be any configured model name
   fallback: gemini-flash-lite
   multimodal: gemini-flash
   reasoner: deepseek-r1
-  classifier: qwen-flash        # model for reasoning detection; omit to disable
-  classifier_min_length: 100    # min chars to run classifier; 0 = disabled
+  classifier: qwen-flash     # model for reasoning detection; omit to disable
+  classifier_min_length: 100 # min chars to run classifier; 0 = disabled
   compaction_model: deepseek
 
 tool_filter:
@@ -201,44 +220,89 @@ Plain text or Markdown injected as system prompt on every request.
 |---|---|
 | `/clear` | Reset conversation context |
 | `/compact` | Summarise and compress history manually |
+| `/stats` | Show conversation stats (messages, chars, last compaction) |
 | `/model` | Show current model |
 | `/model list` | List all available models |
-| `/model <name>` | Switch to a specific model (e.g. `/model deepseek-r1`) |
+| `/model <name>` | Switch to a specific model for the session (e.g. `/model deepseek-r1`) |
 | `/model reset` | Back to auto-routing |
-| `/routing` | Configure routing roles via inline keyboard |
+| `/routing` | Configure routing roles permanently via inline keyboard |
 | `/tools` | List connected MCP tools grouped by server |
 | `/help` | Show help |
 
+> **Note:** `/model` is a temporary session override — it resets on restart. To permanently change the primary model use `/routing` or edit `config/config.yaml`.
+
 ## LLM Routing
 
-| Priority | Model | When |
+| Priority | Role | When |
 |---|---|---|
-| 1 | `gemini-flash` | Message contains an image |
-| 2 | `deepseek-r1` | `/model deepseek-r1` override, or classifier detects complex reasoning |
-| 3 | `deepseek` | Default |
-| 4 | `gemini-flash-lite` | Primary unavailable (5xx / 429 / network) |
+| 1 | `multimodal` | Message contains an image |
+| 2 | `reasoner` | `/model <name>` override, or classifier detects complex reasoning |
+| 3 | `primary` | Default for all other messages |
+| 4 | `fallback` | Primary unavailable (5xx / 429 / network error) |
 
-The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Set `classifier_min_length: 0` to disable. If the classifier model is not configured, auto-routing to reasoner is skipped.
+The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Set `classifier_min_length: 0` to disable.
 
-All routing roles can be changed live via `/routing` — an inline keyboard menu. Changes persist across restarts in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model and offers an inline picker to select a replacement.
+All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
+
+## Semantic Memory
+
+When an embedding model is configured, the bot gains two levels of long-term memory beyond the current session:
+
+### Within-session RAG
+User messages are embedded and stored in SQLite. Instead of always taking the last 30 messages, the context window is built as:
+- **Last 10 messages** — always included (recent context)
+- **Up to 20 older turns** — selected by cosine similarity to the current query
+
+Conversational turns (user message + assistant response + tool calls) are kept together to preserve coherence.
+
+### Cross-session memory
+On each request, past sessions are searched for semantically similar conversations. Up to 5 relevant snippets (cosine similarity > 0.75) are injected into the system prompt:
+
+```
+---
+Relevant context from previous conversations:
+[2026-01-15] You: what did we decide about the database?
+Assistant: We decided to stay with SQLite for simplicity...
+```
+
+Each snippet is truncated (200 chars user / 300 chars assistant) with a 3000-char total budget, so it never bloats the prompt.
+
+This is complementary to the [personal-memory](https://github.com/dzarlax/personal_memory) MCP server: personal-memory stores explicit facts you choose to remember; cross-session RAG surfaces actual conversation fragments automatically.
 
 ## Session Management
 
 - History persists across restarts (SQLite)
 - After **4 hours of inactivity**, a new session starts automatically — the last summary is carried over
 - `/clear` does a full reset with no carry-over
+- Compaction triggers when estimated token count exceeds **16 000 tokens** (images count as 1000 tokens each)
+
+## Companion MCP Servers
+
+This bot is designed to work with self-hosted MCP servers. Two ready-made servers are available:
+
+| Server | Description |
+|---|---|
+| [personal-memory](https://github.com/dzarlax/personal_memory) | Semantic long-term memory with vector embeddings + Todoist integration |
+| [health-dashboard](https://github.com/dzarlax/health_dashboard) | Health data from Apple Health (via Health Auto Export) with MCP tools for AI analysis |
+
+Configure them in `config/mcp.json`.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     User(["📱 Telegram"])
-    Handler["Telegram Handler"]
+    Handler["Telegram Handler\n(debounce · reply chain · batch)"]
     Agent["Agent\nagentic loop"]
-    Router["LLM Router"]
+    Router["LLM Router\n(primary · fallback · reasoner\nmultimodal · classifier)"]
     MCP["MCP Client"]
-    Store[("SQLite")]
-    Emb["Gemini Embedding\ngemini-embedding-001"]
+    Store[("SQLite\nconversations.db")]
+    Emb["Embedding Model\n(Gemini / HF-TEI / OpenAI)"]
+
+    subgraph Memory ["Semantic Memory"]
+        SM["Within-session RAG\nlast 10 + top-20 by similarity"]
+        CM["Cross-session search\ntop-5 snippets → system prompt"]
+    end
 
     subgraph LLMs ["LLM Providers"]
         DS["deepseek"]
@@ -254,21 +318,23 @@ flowchart TD
         S3["..."]
     end
 
-    User -->|"text / photo / forward"| Handler
+    User -->|"text / photo / forward / reply"| Handler
     Handler --> Agent
-    Agent <--> Store
+    Agent <-->|"store + retrieve"| Store
+    Store <-->|"embed messages"| Emb
+    Store --> SM
+    Store --> CM
+    SM -->|"context window"| Agent
+    CM -->|"system prompt snippets"| Agent
     Agent --> Router
-    Agent -->|"query embed\ntop-K filter"| MCP
-    MCP <-->|"embed tools\nat startup"| Emb
+    Agent -->|"query embed · top-K filter"| MCP
+    MCP <-->|"embed tools at startup"| Emb
     MCP <-->|"tools/call"| Servers
     Router --> DS
     Router --> DSR
     Router --> GL
     Router --> GM
     Router --> QW
-    MCP --> S1
-    MCP --> S2
-    MCP --> S3
 ```
 
 See [CLAUDE.md](CLAUDE.md) for developer details.

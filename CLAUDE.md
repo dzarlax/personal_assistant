@@ -12,9 +12,14 @@ make docker-up    # start in Docker (detached)
 make logs         # follow Docker logs
 ```
 
-Run a single test:
+Run a single test package:
 ```bash
 set -a && . ./.env && set +a && go test ./internal/telegram/...
+```
+
+Run all tests with race detector:
+```bash
+CGO_ENABLED=0 go test -race -count=1 ./...
 ```
 
 Build requires no CGO — `modernc.org/sqlite` is pure Go.
@@ -31,7 +36,8 @@ flowchart LR
     H --> A["Agent.Process\n(llm.Message)"]
     A --> R["Router.Chat"]
     A <-->|"sequential\nmax 5 iterations"| MCP["MCP Client"]
-    A <--> S[("SQLite / Memory")]
+    A <-->|"semantic store/retrieve"| S[("SQLite")]
+    A -->|"cross-session snippets\n→ system prompt"| R
     R --> LLM["LLM Provider"]
 ```
 
@@ -40,74 +46,132 @@ flowchart LR
 **`internal/llm`** — LLM abstraction.
 - `provider.go` — `Provider` interface + `Message`, `Tool`, `ContentPart`, `ImageURL` types
 - `openai_compat.go` — shared OpenAI-compatible implementation using raw `net/http` (no go-openai). `buildMessages(messages, systemPrompt, vision bool)` serialises messages with full control: assistant messages with `tool_calls` and empty content use `"content": null` (not omitted) to satisfy all provider APIs. `image_url` parts are replaced with `[image]` for non-vision providers. Defines `APIError{StatusCode, Message}` for fallback routing.
-- `router.go` — thread-safe routing config (`mu` protects both `override` and `cfg`). Priority: multimodal → override → classifier→reasoner → primary → fallback on 5xx/429/network. `SetRole(role, model)` + `SetClassifierMinLen(n)` allow runtime changes; `saveOverrides()` persists to `persistPath` (JSON) on every change; `LoadPersistedOverrides()` applies saved values on startup.
-- All providers require `base_url` in config (no hardcoded defaults)
+- `router.go` — thread-safe routing config (`mu` protects both `override` and `cfg`). Priority: multimodal → override → classifier → reasoner → primary → fallback on 5xx/429/network. `SetRole(role, model)` + `SetClassifierMinLen(n)` allow runtime changes; `saveOverrides()` persists to `persistPath` (JSON) on every change; `LoadPersistedOverrides()` applies saved values on startup. Classifier has a 5 s timeout.
+- All providers are optional in `main.go` — any configured model can be `routing.default`. The bot exits with a clear error if the default provider is missing.
 
 **`internal/store`** — conversation history.
-- `Store` interface + `CompactableStore` extension (SQLite only)
-- SQLite: history scoped by `id > lastResetID` (is_reset=1 marker). Auto session break after 4h idle carries last summary; `/clear` resets without carry-over. `parts` column stores multimodal content as JSON.
+- `Store` interface → `CompactableStore` → `SemanticStore` (progressive extension interfaces)
+- `Store`: `GetHistory`, `AddMessage`, `ClearHistory`
+- `CompactableStore`: adds `GetAllActive`, `AddSummary`, `MarkCompacted`, `ActiveCharCount`, `GetStats`
+- `SemanticStore`: adds `AddMessageWithEmbedding`, `GetSemanticHistory`, `SearchAllSessions`
+- `HistorySnippet` — `{Date, UserText, BotText}` used for cross-session context injection
+- SQLite: history scoped by `id > lastResetID` (is_reset=1 marker). Auto session break after 4h idle carries last summary; `/clear` resets without carry-over. `parts` column stores multimodal content as JSON. `embedding BLOB` stores float32 vectors (little-endian, 4 bytes/value).
 - Memory: fallback when `data/` dir is unavailable
 
 **`internal/mcp`** — MCP HTTP client.
 - Connects on startup (`initialize` → `tools/list`). Supports JSON and SSE responses.
 - Per-server tool filtering: `allowTools` (allowlist) checked after `denyTools` (blocklist)
 - Auth via generic `headers` map (Claude Desktop format)
-- **Vector tool filtering**: `EnableEmbeddings(apiKey, model, topK)` + `EmbedTools(ctx)` at startup computes Gemini embeddings for all tools; `LLMToolsForQuery(ctx, query)` returns top-K most relevant tools per request via cosine similarity. Falls back to all tools if embeddings unavailable or query is empty.
+- Security: `validateServerURL` blocks loopback/link-local addresses and non-http(s) schemes; tool names validated by regex + 128-char limit; descriptions truncated to 4 KB; args size capped at 1 MB; responses capped at 10 MB via `io.LimitReader`; tool results truncated to 100 KB
+- **Vector tool filtering**: `EnableEmbeddings(cfg, topK)` + `EmbedTools(ctx)` at startup; `LLMToolsForQuery(ctx, query)` returns top-K most relevant tools per request via cosine similarity
+- **`EmbedText(ctx, text) ([]float32, error)`** — public method; used by agent for message embedding (shared embedding layer with tool filtering)
+
+**`internal/mcp/embeddings.go`** — embedding provider abstraction.
+- `embed(ctx, cfg, text)` dispatches by `cfg.Provider`: `"hf-tei"` → HuggingFace TEI (`POST /embed`, Basic Auth); `"openai"` → OpenAI-compatible (`POST /v1/embeddings`, Bearer); default → Gemini (`embedContent` API, `x-goog-api-key`)
+- `doEmbedRequest` — shared HTTP helper with `io.LimitReader(10 MB)`
+- `cosineSimilarity` — used for tool filtering; `cosineSimilarityF32` (same logic) in `store/sqlite.go` for history
 
 **`internal/agent`** — agentic loop.
-- `Process(ctx, chatID, llm.Message, onToolCall)` — prepends `"Current date and time: ..."` to the system prompt on every call using `time.Now()` (respects `TZ` env var set in Docker)
-- `compact.go` — triggered at 60K chars; snaps boundary to user message; marks old rows `is_compacted=1`, inserts summary as `is_summary=1`
+- `Process(ctx, chatID, llm.Message, onToolCall)`:
+  1. Calls `storeUserMessage` — embeds user message via `mcp.EmbedText` and stores with embedding if `SemanticStore` available; falls back to plain `AddMessage`
+  2. Auto-compacts if needed
+  3. Calls `buildCrossSessionContext` — searches past sessions, formats snippets for system prompt (top 5, cosine > 0.75, 3000 char budget; 200/300 chars per user/bot snippet)
+  4. Agentic loop: calls `getHistory` → `Router.Chat` → handles tool calls (max 5 iterations)
+- `getHistory(chatID, queryEmb)` — uses `SemanticStore.GetSemanticHistory(chatID, emb, 10, 20)` when embedding available; falls back to `GetHistory`
+- `GetStats(chatID) (store.ChatStats, bool)` — type-asserts store to `CompactableStore`
+- `compact.go` — token-based threshold: 16 000 estimated tokens. Fast pre-check at 32 000 chars. `EstimateTokens`: `len(Content)/4` + text parts `/4` + images `×1000`
 
 **`internal/telegram`** — Telegram Bot API handler.
-- `markdown.go` — Markdown → Telegram HTML converter (headers, bold, italic, code blocks, links, lists). No external deps.
-- `handler.go` — all non-command messages go through a 2 s debounce batch (`queueMessage` → `processBatch`). The batch merges text, photos, and forwarded messages into a single `llm.Message` before calling `executeMessage`. Forwarded-only batches are stored in `forwardBuf` (5 min TTL) and acknowledged with `✓`; the next regular message consumes the buffer. Hidden hyperlinks (`text_link` entities) are appended as plain URLs.
-- `executeMessage` — shared processing path: typing loop, live tool-call status (edited message), `agent.Process`, response send.
-- `/routing` command — sends an inline keyboard menu for live routing config changes (primary, fallback, reasoner, classifier, multimodal, classifier threshold). Callback queries (`rt:role:*`, `rt:set:*`, `rt:min:*`) edit the same message in-place. Changes are persisted via `agent.SetRoutingRole` / `SetClassifierMinLen`.
-- `NotifyMissingRouting()` — called at startup; sends an inline model-picker to the owner for each routing role that references a provider not present in the providers map.
-- Responses ≥ 4096 chars sent as `response.md` attachment.
+- `markdown.go` — Markdown → Telegram HTML converter. No external deps.
+- `handler.go`:
+  - 2 s debounce batch merges text, photos (max 5), forwarded messages into one `llm.Message`
+  - **Race condition fix**: `version` counter on each batch; timer bails if version changed
+  - **Reply chain**: `buildReplyQuote()` prepends `[Replying to: "..."]` (max 300 chars)
+  - **Graceful shutdown**: `Drain()` atomically swaps batches map, flushes synchronously
+  - `/routing` — inline keyboard for live routing changes; callback `rt:set:<role>:<model>` calls `agent.SetRoutingRole`; logs `routing change requested/applied`
+  - `/stats` — calls `agent.GetStats`, formats stats message
+  - `NotifyMissingRouting()` — startup check; sends inline model-picker for unconfigured routing roles
+  - Responses ≥ 4096 chars sent as `response.md`
+  - `downloadFile` uses 30 s timeout HTTP client
 
 ### Configuration files
 
 | File | Purpose |
 |---|---|
-| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`) — auto-loaded by Docker Compose from project root |
-| `config/config.yaml` | Models (all require `base_url`; `embedding` model is exception — no `base_url`/`max_tokens`), routing, tool_filter, Telegram IDs — `${ENV_VAR}` substitution |
-| `config/routing.json` | Runtime routing overrides written by `/routing` inline UI — auto-created, applied on top of `config.yaml` at startup |
-| `config/mcp.json` | MCP servers in Claude Desktop format — `allowTools`, `denyTools` per server |
+| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`), `EMBED_API_KEY` (optional, HF-TEI) |
+| `config/config.yaml` | Models, routing, tool_filter — `${ENV_VAR}` substitution. All models require `base_url`; `embedding` is exception (no `base_url`/`max_tokens`) |
+| `config/routing.json` | Runtime routing overrides from `/routing` UI — auto-created, applied over `config.yaml` at startup. **Applied before compacter init**, so effective primary is always correct. |
+| `config/mcp.json` | MCP servers in Claude Desktop format |
 | `config/system_prompt.md` | System prompt injected on every LLM request |
-
-Paths are hardcoded in `main.go` as `config/config.yaml`, `config/system_prompt.md`, `config/mcp.json`. Docker Compose mounts `./config:/app/config` (writable — `routing.json` is written at runtime) and passes secrets via `environment:` using `${VAR}` from `.env`.
 
 ### LLM routing priority
 
-1. **Multimodal** (`gemini-flash`) — message has image `Parts`
-2. **Reasoner** (`deepseek-r1`) — `/model deepseek-r1` override, or LLM classifier returns `yes`
-3. **Primary** (`deepseek`) — default
-4. **Fallback** (`gemini-flash-lite`) — primary returns 5xx/429/network error
+1. **Multimodal** — message has image `Parts`
+2. **Reasoner** — `/model` override, or classifier returns `yes`
+3. **Primary** — default (any configured model; not hardcoded to DeepSeek)
+4. **Fallback** — primary returns 5xx/429/network error
 
-Classifier: a separate provider call (default: `qwen-flash`) with no history and no tools, returns `yes`/`no`. Only fires when message ≥ `classifier_min_length` chars (default 100). Disabled when `classifier_min_length: 0` or classifier provider unavailable. Falls back to primary on error.
+`routing.default` can be any model key defined under `models:`. The bot exits with a clear error at startup if the configured default is not available.
 
-All routing roles are configurable at runtime via `/routing` inline keyboard and persist across restarts in `config/routing.json`.
+### Semantic memory layers
+
+**Within-session RAG** (`SemanticStore.GetSemanticHistory`):
+- User messages embedded and stored as `embedding BLOB` in SQLite
+- Context = last `recentN=10` messages always + up to `topK=20` older turns ranked by cosine similarity
+- Turns (user msg + assistant reply + tool calls) kept together for coherence
+- Falls back to `GetHistory` (last 30) when embeddings unavailable
+
+**Cross-session memory** (`SemanticStore.SearchAllSessions` → `agent.buildCrossSessionContext`):
+- Searches all sessions (no `lastResetID` filter) for turns similar to current query
+- Filters: cosine ≥ 0.75, top 5 results, 3000 char total budget
+- Snippets injected into system prompt as `"Relevant context from previous conversations:"`
+- Complementary to MCP personal-memory (which stores explicit facts)
 
 ### Tool filtering (vector similarity)
 
-Configured via `tool_filter.top_k` in `config.yaml` and `models.embedding` (Gemini `gemini-embedding-001`).
+Configured via `tool_filter.top_k` in `config.yaml` and `models.embedding`. Same embedding model is shared with conversation memory.
 
-- At startup: embeddings computed for all tools (`name + ": " + description`) and cached in memory
+- At startup: all tool descriptions embedded, cached in memory
 - Per request: user message embedded → cosine similarity → top-K tools sent to LLM
-- Fallback to all tools if: embeddings not ready, `top_k=0`, `top_k >= total tools`, or embed API error
 - `top_k: 0` disables filtering entirely
 
-### SQLite schema notes
+### SQLite schema
 
-Flag columns: `is_reset`, `is_compacted`, `is_summary`, `parts` (JSON). Queries always filter by `id > lastResetID`. `GetHistory` returns last 30 non-compacted messages. `ALTER TABLE ADD COLUMN parts` runs at startup for migration of existing DBs.
+```sql
+CREATE TABLE messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id      INTEGER NOT NULL,
+    role         TEXT    NOT NULL,
+    content      TEXT    NOT NULL,
+    parts        TEXT,           -- JSON: []ContentPart for multimodal
+    tool_calls   TEXT,           -- JSON: []ToolCall
+    tool_call_id TEXT,
+    embedding    BLOB,           -- float32 LE, user messages only
+    is_summary   INTEGER DEFAULT 0,
+    is_compacted INTEGER DEFAULT 0,
+    is_reset     INTEGER DEFAULT 0,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Migrations run at startup with `ALTER TABLE ADD COLUMN` (idempotent in SQLite). `GetHistory` returns last 30 non-compacted messages. Queries always filter `id > lastResetID`.
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `go test -race -count=1 ./...` before Docker build and push. A failed test prevents the image from being published.
 
 ### Adding a new LLM provider
 
 1. Implement `llm.Provider` interface (or reuse `openai_compat.go` if OpenAI-compatible)
 2. Add `ModelConfig` with `base_url` to `config.yaml` and `ModelsConfig` struct
-3. Wire in `main.go`, pass to `llm.NewRouter`
+3. Wire in `main.go` with `if cfg.Models.X.APIKey != "" { addProvider("key", ...) }`
+4. Set as `routing.default` or a routing role
 
 ### Adding multimodal content types
 
 `llm.Message.Parts []ContentPart` supports `"text"`, `"image_url"`. Audio (`"input_audio"`) is defined in types but not wired in the handler.
+
+### Companion MCP servers
+
+- [personal-memory](https://github.com/dzarlax/personal_memory) — semantic memory + Todoist, connects via `mcp.json`
+- [health-dashboard](https://github.com/dzarlax/health_dashboard) — Apple Health data + MCP tools for AI analysis
