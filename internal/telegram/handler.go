@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,19 +21,28 @@ import (
 )
 
 const (
-	maxMessageLen     = 4096
-	requestTimeout    = 5 * time.Minute
-	forwardTTL        = 5 * time.Minute
-	batchTimeout      = 2 * time.Second
-	maxImagesPerBatch = 5
-	downloadTimeout   = 30 * time.Second
-	maxInputLen       = 50 * 1024 // 50 KB cap on incoming text
+	maxMessageLen        = 4096
+	requestTimeout       = 5 * time.Minute
+	forwardTTL           = 5 * time.Minute
+	forwardEmbedTimeout  = 10 * time.Second
+	batchTimeout         = 2 * time.Second
+	maxImagesPerBatch    = 5
+	downloadTimeout      = 30 * time.Second
+	maxInputLen          = 50 * 1024 // 50 KB cap on incoming text
+	forwardFilterMinSize = 3         // only filter by relevance when more than this many forwards are buffered
+	forwardSelectThresh  = 0.25      // min cosine similarity to include a buffered forward
 )
 
-// forwardedContent holds a buffered forwarded message waiting for user follow-up.
+// forwardEntry is a single forwarded message with its pre-computed embedding.
 // text already includes the "[Forwarded from ...]" header prefix.
+type forwardEntry struct {
+	text string
+	emb  []float32
+}
+
+// forwardedContent holds buffered forwarded messages waiting for a user follow-up question.
 type forwardedContent struct {
-	text      string
+	entries   []forwardEntry
 	parts     []llm.ContentPart
 	expiresAt time.Time
 }
@@ -200,9 +211,9 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 		return
 	}
 
-	var textParts []string
+	var forwardTexts []string  // forwarded messages in this batch
+	var questionTexts []string // regular (non-forwarded) messages in this batch
 	var imageParts []llm.ContentPart
-	hasRegular := false // at least one non-forwarded message
 
 	for _, msg := range b.msgs {
 		isForward := msg.ForwardDate != 0
@@ -213,22 +224,20 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 		}
 		text = appendTextLinks(text, msg.Entities, msg.CaptionEntities)
 
-		// If this message is a reply, prepend the quoted original so the LLM has context.
-		if msg.ReplyToMessage != nil && !isForward {
-			text = buildReplyQuote(msg.ReplyToMessage) + text
-		}
-
 		if isForward {
 			header := buildForwardHeader(msg)
 			entry := header
 			if text != "" {
 				entry = header + "\n" + text
 			}
-			textParts = append(textParts, entry)
+			forwardTexts = append(forwardTexts, entry)
 		} else {
-			hasRegular = true
+			// If this message is a reply, prepend the quoted original so the LLM has context.
+			if msg.ReplyToMessage != nil {
+				text = buildReplyQuote(msg.ReplyToMessage) + text
+			}
 			if text != "" {
-				textParts = append(textParts, text)
+				questionTexts = append(questionTexts, text)
 			}
 		}
 
@@ -250,19 +259,12 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 	}
 
 	// If only forwarded messages arrived (no regular user message), buffer and ack.
-	if !hasRegular {
-		h.forwardMu.Lock()
-		h.forwardBuf[chatID] = &forwardedContent{
-			text:      strings.Join(textParts, "\n"),
-			parts:     imageParts,
-			expiresAt: time.Now().Add(forwardTTL),
-		}
-		h.forwardMu.Unlock()
-		h.sendPlain(chatID, "✓ Received. Add your question or comment.")
+	if len(questionTexts) == 0 {
+		h.bufferForwards(chatID, forwardTexts, imageParts)
 		return
 	}
 
-	// Consume any previously buffered forward (slow follow-up path).
+	// Consume any previously buffered forwards (slow follow-up path).
 	h.forwardMu.Lock()
 	fwd := h.forwardBuf[chatID]
 	if fwd != nil && time.Now().After(fwd.expiresAt) {
@@ -271,13 +273,25 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 	delete(h.forwardBuf, chatID)
 	h.forwardMu.Unlock()
 
+	var allTextParts []string
+
 	if fwd != nil {
-		textParts = append([]string{fwd.text}, textParts...)
+		// Embed the user question to select only relevant buffered forwards.
+		questionText := strings.Join(questionTexts, "\n\n")
+		embedCtx, cancel := context.WithTimeout(context.Background(), forwardEmbedTimeout)
+		questionEmb, _ := h.agent.EmbedText(embedCtx, questionText)
+		cancel()
+
+		selected := selectForwards(fwd.entries, questionEmb)
+		allTextParts = append(allTextParts, selected...)
 		imageParts = append(fwd.parts, imageParts...)
 	}
 
+	allTextParts = append(allTextParts, forwardTexts...)
+	allTextParts = append(allTextParts, questionTexts...)
+
 	// Build the LLM message.
-	combined := strings.Join(textParts, "\n\n")
+	combined := strings.Join(allTextParts, "\n\n")
 	if len(combined) > maxInputLen {
 		combined = combined[:maxInputLen]
 	}
@@ -297,6 +311,102 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 	}
 
 	h.executeMessage(chatID, userMsg)
+}
+
+// bufferForwards embeds each forwarded text and stores them in forwardBuf for
+// later relevance-based filtering when the user's follow-up question arrives.
+func (h *Handler) bufferForwards(chatID int64, texts []string, parts []llm.ContentPart) {
+	embedCtx, cancel := context.WithTimeout(context.Background(), forwardEmbedTimeout)
+	defer cancel()
+
+	entries := make([]forwardEntry, 0, len(texts))
+	for _, t := range texts {
+		emb, _ := h.agent.EmbedText(embedCtx, t)
+		entries = append(entries, forwardEntry{text: t, emb: emb})
+	}
+
+	h.forwardMu.Lock()
+	h.forwardBuf[chatID] = &forwardedContent{
+		entries:   entries,
+		parts:     parts,
+		expiresAt: time.Now().Add(forwardTTL),
+	}
+	h.forwardMu.Unlock()
+	h.sendPlain(chatID, "✓ Received. Add your question or comment.")
+}
+
+// selectForwards returns the texts from entries most relevant to questionEmb.
+// Falls back to all entries when embeddings are unavailable or entry count is small.
+func selectForwards(entries []forwardEntry, questionEmb []float32) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	// With few entries or no question embedding, include everything.
+	if len(questionEmb) == 0 || !forwardHasEmbs(entries) || len(entries) <= forwardFilterMinSize {
+		texts := make([]string, len(entries))
+		for i, e := range entries {
+			texts[i] = e.text
+		}
+		return texts
+	}
+
+	type scored struct {
+		idx   int
+		score float64
+	}
+	scores := make([]scored, len(entries))
+	for i, e := range entries {
+		s := 0.0
+		if len(e.emb) > 0 {
+			s = forwardCosine(questionEmb, e.emb)
+		}
+		scores[i] = scored{idx: i, score: s}
+	}
+
+	// Sort descending by score to find relevant ones; always keep at least 2.
+	sort.Slice(scores, func(i, j int) bool { return scores[i].score > scores[j].score })
+
+	var selected []int
+	for i, s := range scores {
+		if s.score >= forwardSelectThresh || i < 2 {
+			selected = append(selected, s.idx)
+		}
+	}
+
+	// Restore original order.
+	sort.Ints(selected)
+
+	texts := make([]string, 0, len(selected))
+	for _, idx := range selected {
+		texts = append(texts, entries[idx].text)
+	}
+	return texts
+}
+
+func forwardHasEmbs(entries []forwardEntry) bool {
+	for _, e := range entries {
+		if len(e.emb) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func forwardCosine(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0
+	}
+	return dot / denom
 }
 
 // executeMessage sends a prepared LLM message and streams the response back to Telegram.
