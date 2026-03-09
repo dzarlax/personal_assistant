@@ -29,10 +29,27 @@ models:
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  # Embedding model for MCP vector tool filtering (tool_filter.top_k must be > 0).
+  # Three providers are supported — uncomment the one you want to use.
+  #
+  # Option 1: Gemini (default)
+  # embedding:
+  #   provider: gemini
+  #   model: gemini-embedding-001
+  #   api_key: ${GEMINI_API_KEY}
+  #
+  # Option 2: HuggingFace Text Embeddings Inference (e.g. personal-memory server)
   embedding:
-    provider: gemini
-    model: gemini-embedding-001
-    api_key: ${GEMINI_API_KEY}
+    provider: hf-tei
+    base_url: https://embed.dzarlax.dev   # or http://embed-service:8080 in Docker
+    api_key: ${EMBED_API_KEY}                # optional; format: "user:password" for Basic Auth
+  #
+  # Option 3: OpenAI-compatible endpoint
+  # embedding:
+  #   provider: openai
+  #   base_url: https://api.openai.com
+  #   model: text-embedding-3-small
+  #   api_key: ${OPENAI_API_KEY}
   qwen-flash:
     provider: qwen
     model: qwen3.5-flash

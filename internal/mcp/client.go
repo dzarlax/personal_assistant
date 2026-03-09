@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -18,16 +21,25 @@ import (
 	"telegram-agent/internal/llm"
 )
 
+const (
+	maxResponseSize  = 10 * 1024 * 1024 // 10 MB — prevent OOM from malicious server
+	maxToolResultLen = 100 * 1024        // 100 KB — cap what enters conversation history
+	maxDescLen       = 4 * 1024          // 4 KB — tool description sent to LLM
+	maxToolNameLen   = 128
+	maxArgsSize      = 1 * 1024 * 1024 // 1 MB
+)
+
+var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_\-/:. ]+$`)
+
 // Client manages connections to multiple MCP servers.
 type Client struct {
 	servers         map[string]*server
-	tools           []Tool
-	toolServers     map[string]string // tool name → server name
-	logger          *slog.Logger
-	embeddingAPIKey   string
-	embeddingModel    string
-	topK              int
-	embeddingsReady   bool
+	tools          []Tool
+	toolServers    map[string]string // tool name → server name
+	logger         *slog.Logger
+	embeddingCfg   config.ModelConfig
+	topK           int
+	embeddingsReady bool
 }
 
 type server struct {
@@ -57,6 +69,10 @@ func NewClient(configs map[string]config.MCPServerConfig, logger *slog.Logger) *
 		logger:      logger,
 	}
 	for name, cfg := range configs {
+		if err := validateServerURL(cfg.URL); err != nil {
+			logger.Warn("mcp server URL rejected", "server", name, "url", cfg.URL, "err", err)
+			continue
+		}
 		srv := &server{
 			name:    name,
 			url:     cfg.URL,
@@ -110,22 +126,30 @@ func (c *Client) Initialize(ctx context.Context) {
 
 // EnableEmbeddings configures vector-based tool filtering.
 // Must be called before EmbedTools.
-func (c *Client) EnableEmbeddings(apiKey, model string, topK int) {
-	c.embeddingAPIKey = apiKey
-	c.embeddingModel = model
+func (c *Client) EnableEmbeddings(cfg config.ModelConfig, topK int) {
+	c.embeddingCfg = cfg
 	c.topK = topK
+}
+
+// EmbedText computes an embedding for the given text using the configured embedding model.
+// Returns an error if embeddings are not configured.
+func (c *Client) EmbedText(ctx context.Context, text string) ([]float32, error) {
+	if c.embeddingCfg.APIKey == "" && c.embeddingCfg.BaseURL == "" {
+		return nil, fmt.Errorf("embeddings not configured")
+	}
+	return embed(ctx, c.embeddingCfg, text)
 }
 
 // EmbedTools computes and caches embeddings for all tools.
 // Should be called once after Initialize.
 func (c *Client) EmbedTools(ctx context.Context) {
-	if c.embeddingAPIKey == "" {
+	if c.embeddingCfg.APIKey == "" && c.embeddingCfg.BaseURL == "" {
 		return
 	}
 	ok := 0
 	for i := range c.tools {
 		text := c.tools[i].Name + ": " + c.tools[i].Description
-		emb, err := embed(ctx, c.embeddingAPIKey, c.embeddingModel, text)
+		emb, err := embed(ctx, c.embeddingCfg, text)
 		if err != nil {
 			c.logger.Warn("failed to embed tool", "tool", c.tools[i].Name, "err", err)
 			continue
@@ -148,7 +172,7 @@ func (c *Client) LLMToolsForQuery(ctx context.Context, query string) []llm.Tool 
 		return c.LLMTools()
 	}
 
-	queryEmb, err := embed(ctx, c.embeddingAPIKey, c.embeddingModel, query)
+	queryEmb, err := embed(ctx, c.embeddingCfg, query)
 	if err != nil {
 		c.logger.Warn("query embedding failed, using all tools", "err", err)
 		return c.LLMTools()
@@ -279,9 +303,16 @@ func (s *server) listTools(ctx context.Context) ([]Tool, error) {
 
 	tools := make([]Tool, 0, len(resp.Tools))
 	for _, t := range resp.Tools {
+		if len(t.Name) == 0 || len(t.Name) > maxToolNameLen || !validToolName.MatchString(t.Name) {
+			continue // skip tools with invalid names
+		}
+		desc := t.Description
+		if len(desc) > maxDescLen {
+			desc = desc[:maxDescLen]
+		}
 		tools = append(tools, Tool{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			InputSchema: t.InputSchema,
 		})
 	}
@@ -289,6 +320,9 @@ func (s *server) listTools(ctx context.Context) ([]Tool, error) {
 }
 
 func (s *server) callTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	if len(args) > maxArgsSize {
+		return "", fmt.Errorf("tool args too large: %d bytes (max %d)", len(args), maxArgsSize)
+	}
 	id := int(s.counter.Add(1))
 	params := map[string]any{
 		"name":      name,
@@ -321,6 +355,9 @@ func (s *server) callTool(ctx context.Context, name string, args json.RawMessage
 	text := strings.Join(parts, "\n")
 	if resp.IsError {
 		return "", fmt.Errorf("tool error: %s", text)
+	}
+	if len(text) > maxToolResultLen {
+		text = text[:maxToolResultLen] + "\n...[truncated]"
 	}
 	return text, nil
 }
@@ -414,6 +451,7 @@ func (s *server) addAuth(req *http.Request) {
 
 // readJSONResult reads a JSON-RPC response and returns the result field.
 func readJSONResult(r io.Reader) (json.RawMessage, error) {
+	r = io.LimitReader(r, maxResponseSize)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -432,7 +470,7 @@ func readJSONResult(r io.Reader) (json.RawMessage, error) {
 
 // readSSEResult reads an SSE stream and extracts the first data event containing a JSON-RPC result.
 func readSSEResult(r io.Reader) (json.RawMessage, error) {
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(io.LimitReader(r, maxResponseSize))
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -460,4 +498,36 @@ func readSSEResult(r io.Reader) (json.RawMessage, error) {
 		}
 	}
 	return nil, fmt.Errorf("no result in SSE stream")
+}
+
+// validateServerURL rejects URLs that target loopback or link-local addresses
+// to reduce accidental misconfiguration and SSRF risk.
+func validateServerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q (only http/https allowed)", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("missing host")
+	}
+	// Block obvious localhost aliases
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return fmt.Errorf("loopback host not allowed: %s", host)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil // hostname — allow; DNS resolution not checked at config time
+	}
+	if ip.IsLoopback() {
+		return fmt.Errorf("loopback IP not allowed: %s", host)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("link-local IP not allowed: %s", host)
+	}
+	return nil
 }
