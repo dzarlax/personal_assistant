@@ -5,6 +5,9 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 ## Features
 
 - **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner
+- **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
+- **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline
+- **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
 - **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
 - **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
@@ -15,7 +18,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Configurable embeddings** — shared embedding layer used for both tool filtering and conversation memory; supports Gemini (default), HuggingFace TEI, or any OpenAI-compatible endpoint
 - **Persistent memory** — SQLite-backed conversation history with automatic session management
 - **Token-based compaction** — auto-summarises old history when estimated token count exceeds threshold; images count as 1000 tokens each
-- **Embedding response cache** — identical or near-identical queries (cosine ≥ 0.97) return a cached response without calling the LLM; per-chat, 1-hour TTL, 200-entry capacity
+- **Smart token usage** — classifier input truncated to 500 chars; large tool results (>2 KB) auto-summarised before entering history; response cache with cosine ≥ 0.92 threshold and 4-hour TTL
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
 - **Access control** — allowlist by chat ID + owner-only enforcement
 - **Date/time awareness** — current date and time injected into every request; timezone set via `TZ` env var
@@ -25,7 +28,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 - Go 1.24+ (or Docker)
 - [Telegram Bot Token](https://t.me/BotFather)
-- At least one LLM API key (DeepSeek, Gemini, or Qwen)
+- At least one LLM API key (DeepSeek, Gemini, Qwen, or Ollama Cloud)
 
 ## Quick start (NAS / Pi / server)
 
@@ -175,6 +178,12 @@ models:
     max_tokens: 8192
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
+  # Ollama Cloud or local Ollama (native /api/chat protocol)
+  # ollama:
+  #   model: qwen3.5:32b          # any model from ollama.com/search?c=cloud
+  #   api_key: ${OLLAMA_API_KEY}  # required for cloud; optional for local
+  #   base_url: https://ollama.com # default; http://localhost:11434 for local
+
 routing:
   default: deepseek          # primary model — can be any configured model name
   fallback: gemini-flash-lite
@@ -186,6 +195,12 @@ routing:
 
 tool_filter:
   top_k: 20   # top-K tools selected per request via vector similarity; 0 = disabled
+
+# Ollama web search — gives any LLM access to real-time web results
+# web_search:
+#   enabled: true
+#   api_key: ${OLLAMA_API_KEY}
+#   base_url: https://ollama.com  # default
 ```
 
 ### `config/mcp.json`
@@ -236,12 +251,12 @@ Plain text or Markdown injected as system prompt on every request.
 
 | Priority | Role | When |
 |---|---|---|
-| 1 | `multimodal` | Message contains an image |
+| 1 | `multimodal` | Message contains an image or audio (voice transcription) |
 | 2 | `reasoner` | `/model <name>` override, or classifier detects complex reasoning |
 | 3 | `primary` | Default for all other messages |
 | 4 | `fallback` | Primary unavailable (5xx / 429 / network error) |
 
-The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Set `classifier_min_length: 0` to disable.
+The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable.
 
 All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
 
@@ -308,12 +323,15 @@ flowchart TD
         SC["Semantic compaction\ntopic clusters → per-cluster summary"]
     end
 
+    WebSearch["Web Search\n(Ollama API)"]
+
     subgraph LLMs ["LLM Providers"]
         DS["deepseek"]
         DSR["deepseek-r1"]
         GL["gemini-flash-lite"]
         GM["gemini-flash"]
         QW["qwen-* (optional)"]
+        OL["ollama (optional)"]
     end
 
     subgraph Servers ["MCP Servers"]
@@ -322,7 +340,7 @@ flowchart TD
         S3["..."]
     end
 
-    User -->|"text / photo / reply"| Handler
+    User -->|"text / photo / voice / reply"| Handler
     User -->|"forwarded messages"| FwdBuf
     FwdBuf <-->|"embed forwards"| Emb
     FwdBuf -->|"relevant forwards only\ncosine ≥ 0.25"| Handler
@@ -337,6 +355,8 @@ flowchart TD
     Agent -->|"cache hit → skip LLM"| Agent
     Agent --> Router
     Agent -->|"query embed · top-K filter"| MCP
+    Agent <-->|"web_search tool"| WebSearch
+    Handler -->|"voice → transcribe"| Agent
     MCP <-->|"embed tools at startup"| Emb
     MCP <-->|"tools/call"| Servers
     Router --> DS
@@ -344,6 +364,7 @@ flowchart TD
     Router --> GL
     Router --> GM
     Router --> QW
+    Router --> OL
 ```
 
 See [CLAUDE.md](CLAUDE.md) for developer details.
