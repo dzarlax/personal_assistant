@@ -13,6 +13,13 @@ type Config struct {
 	Models     ModelsConfig     `yaml:"models"`
 	Routing    RoutingConfig    `yaml:"routing"`
 	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
+	WebSearch  WebSearchConfig  `yaml:"web_search"`
+}
+
+type WebSearchConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	BaseURL string `yaml:"base_url"` // default: https://ollama.com
+	APIKey  string `yaml:"api_key"`
 }
 
 type ToolFilterConfig struct {
@@ -49,6 +56,7 @@ type ModelsConfig struct {
 	QwenFlash       ModelConfig `yaml:"qwen-flash"`
 	QwenPlus        ModelConfig `yaml:"qwen3.5-plus"`
 	QwenMax         ModelConfig `yaml:"qwen-max"`
+	Ollama          ModelConfig `yaml:"ollama"`
 }
 
 type RoutingConfig struct {
@@ -97,5 +105,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	return &cfg, nil
+}
+
+// Validate checks config values for consistency.
+func (c *Config) Validate() error {
+	if c.Telegram.BotToken == "" {
+		return fmt.Errorf("telegram.bot_token is required")
+	}
+	if c.Routing.Default == "" {
+		return fmt.Errorf("routing.default is required")
+	}
+	if c.ToolFilter.TopK < 0 {
+		return fmt.Errorf("tool_filter.top_k must be >= 0, got %d", c.ToolFilter.TopK)
+	}
+	if c.Routing.ClassifierMinLength < 0 {
+		return fmt.Errorf("routing.classifier_min_length must be >= 0, got %d", c.Routing.ClassifierMinLength)
+	}
+	return nil
 }

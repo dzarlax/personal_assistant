@@ -21,16 +21,17 @@ import (
 )
 
 const (
-	maxMessageLen        = 4096
-	requestTimeout       = 5 * time.Minute
-	forwardTTL           = 5 * time.Minute
-	forwardEmbedTimeout  = 10 * time.Second
-	batchTimeout         = 2 * time.Second
-	maxImagesPerBatch    = 5
-	downloadTimeout      = 30 * time.Second
-	maxInputLen          = 50 * 1024 // 50 KB cap on incoming text
-	forwardFilterMinSize = 3         // only filter by relevance when more than this many forwards are buffered
-	forwardSelectThresh  = 0.25      // min cosine similarity to include a buffered forward
+	maxMessageLen         = 4096
+	requestTimeout        = 5 * time.Minute
+	forwardTTL            = 5 * time.Minute
+	forwardEmbedTimeout   = 10 * time.Second
+	batchTimeout          = 2 * time.Second
+	maxImagesPerBatch     = 5
+	downloadTimeout       = 30 * time.Second
+	maxInputLen           = 50 * 1024 // 50 KB cap on incoming text
+	forwardFilterMinSize  = 3         // only filter by relevance when more than this many forwards are buffered
+	forwardSelectThresh   = 0.25      // min cosine similarity to include a buffered forward
+	maxConcurrentUpdates  = 10        // limit concurrent goroutines processing updates
 )
 
 // forwardEntry is a single forwarded message with its pre-computed embedding.
@@ -66,6 +67,8 @@ type Handler struct {
 
 	batchMu sync.Mutex
 	batches map[int64]*pendingBatch
+
+	sem chan struct{} // concurrency limiter for handleUpdate goroutines
 }
 
 func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger) (*Handler, error) {
@@ -93,6 +96,7 @@ func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger)
 		logger:     logger,
 		forwardBuf: make(map[int64]*forwardedContent),
 		batches:    make(map[int64]*pendingBatch),
+		sem:        make(chan struct{}, maxConcurrentUpdates),
 	}, nil
 }
 
@@ -110,7 +114,11 @@ func (h *Handler) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			go h.handleUpdate(update)
+			h.sem <- struct{}{} // acquire slot; blocks if maxConcurrentUpdates reached
+			go func() {
+				defer func() { <-h.sem }() // release slot
+				h.handleUpdate(update)
+			}()
 		}
 	}
 }
@@ -223,6 +231,18 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 			text = msg.Caption
 		}
 		text = appendTextLinks(text, msg.Entities, msg.CaptionEntities)
+
+		// Transcribe voice/audio messages to text.
+		if msg.Voice != nil || msg.Audio != nil {
+			voiceText := h.transcribeVoice(chatID, msg)
+			if voiceText != "" {
+				if text != "" {
+					text = text + "\n" + voiceText
+				} else {
+					text = voiceText
+				}
+			}
+		}
 
 		if isForward {
 			header := buildForwardHeader(msg)
@@ -407,6 +427,39 @@ func forwardCosine(a, b []float32) float64 {
 		return 0
 	}
 	return dot / denom
+}
+
+const transcribeTimeout = 30 * time.Second
+
+// transcribeVoice downloads a voice/audio message and transcribes it to text via the LLM.
+func (h *Handler) transcribeVoice(chatID int64, msg *tgbotapi.Message) string {
+	var fileID string
+	if msg.Voice != nil {
+		fileID = msg.Voice.FileID
+	} else if msg.Audio != nil {
+		fileID = msg.Audio.FileID
+	}
+	if fileID == "" {
+		return ""
+	}
+
+	data, err := h.downloadFile(fileID)
+	if err != nil {
+		h.logger.Error("failed to download voice", "chat_id", chatID, "err", err)
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), transcribeTimeout)
+	defer cancel()
+
+	text, err := h.agent.TranscribeAudio(ctx, data, "ogg")
+	if err != nil {
+		h.logger.Error("transcription failed", "chat_id", chatID, "err", err)
+		return ""
+	}
+
+	h.logger.Info("voice transcribed", "chat_id", chatID, "text_len", len(text))
+	return text
 }
 
 // executeMessage sends a prepared LLM message and streams the response back to Telegram.
@@ -607,14 +660,15 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 	}
 }
 
+var downloadHTTPClient = &http.Client{Timeout: downloadTimeout}
+
 func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 	file, err := h.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
 		return nil, err
 	}
 	url := file.Link(h.bot.Token)
-	client := &http.Client{Timeout: downloadTimeout}
-	resp, err := client.Get(url) //nolint:gosec
+	resp, err := downloadHTTPClient.Get(url) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}

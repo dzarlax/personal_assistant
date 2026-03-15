@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	cacheHitThreshold   = 0.97
-	defaultCacheTTL     = time.Hour
+	cacheHitThreshold   = 0.92
+	defaultCacheTTL     = 4 * time.Hour
 	defaultCacheMaxSize = 200
 )
 

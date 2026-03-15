@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,10 @@ import (
 	"telegram-agent/internal/store"
 )
 
+func encodeBase64(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}
+
 const (
 	maxToolIterations = 5
 	semanticRecentN   = 10 // always include last N messages in current session
@@ -23,6 +28,8 @@ const (
 	crossSessionMaxChars  = 3000  // total budget for cross-session block in system prompt
 	snippetUserMaxChars   = 200   // per-snippet user text truncation
 	snippetBotMaxChars    = 300   // per-snippet assistant text truncation
+
+	toolResultSummarizeThreshold = 2000 // summarize tool results longer than this (chars)
 )
 
 type Agent struct {
@@ -33,6 +40,7 @@ type Agent struct {
 	cache     *ResponseCache
 	sysPrompt string
 	logger    *slog.Logger
+	webSearch *WebSearchConfig // nil = disabled
 }
 
 func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Compacter, sysPrompt string, logger *slog.Logger) *Agent {
@@ -45,6 +53,28 @@ func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Co
 		sysPrompt: sysPrompt,
 		logger:    logger,
 	}
+}
+
+// TranscribeAudio sends audio data to the multimodal LLM for transcription.
+// Returns the transcribed text. The audio is not stored in conversation history.
+func (a *Agent) TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error) {
+	msg := llm.Message{
+		Role: "user",
+		Parts: []llm.ContentPart{
+			{Type: "text", Text: "Transcribe this voice message exactly as spoken. Return only the transcription, no commentary."},
+			{Type: "input_audio", InputAudio: &llm.InputAudio{Data: encodeBase64(audioData), Format: format}},
+		},
+	}
+	resp, err := a.router.Chat(ctx, []llm.Message{msg}, "", nil)
+	if err != nil {
+		return "", fmt.Errorf("transcribe: %w", err)
+	}
+	return strings.TrimSpace(resp.Content), nil
+}
+
+// EnableWebSearch activates the Ollama web search tool.
+func (a *Agent) EnableWebSearch(cfg WebSearchConfig) {
+	a.webSearch = &cfg
 }
 
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
@@ -65,6 +95,9 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	var tools []llm.Tool
 	if a.mcp != nil {
 		tools = a.mcp.LLMToolsForQuery(ctx, queryText)
+	}
+	if a.webSearch != nil {
+		tools = append(tools, webSearchTool())
 	}
 
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
@@ -89,6 +122,9 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			if resp.Content == "" {
+				a.logger.Warn("empty response from LLM", "chat_id", chatID, "iteration", i)
+			}
 			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: resp.Content})
 			// Cache only pure direct responses (first iteration, no tool calls).
 			if i == 0 {
@@ -108,10 +144,16 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 				onToolCall(tc.Name)
 			}
 			a.logger.Info("tool call", "tool", tc.Name)
-			result, err := a.mcp.CallTool(ctx, tc.Name, tc.Arguments)
+			result, err := a.callTool(ctx, tc.Name, tc.Arguments)
 			if err != nil {
 				a.logger.Warn("tool call failed", "tool", tc.Name, "err", err)
 				result = fmt.Sprintf("Error: %s", err.Error())
+			}
+			if len(result) > toolResultSummarizeThreshold {
+				if summarized, sErr := a.summarizeToolResult(ctx, tc.Name, result); sErr == nil {
+					a.logger.Info("tool result summarized", "tool", tc.Name, "original_len", len(result), "summary_len", len(summarized))
+					result = summarized
+				}
 			}
 			a.logger.Info("tool result", "tool", tc.Name, "result_len", len(result))
 			a.store.AddMessage(chatID, llm.Message{
@@ -188,15 +230,43 @@ func (a *Agent) EmbedText(ctx context.Context, text string) ([]float32, error) {
 }
 
 func (a *Agent) ListTools() []ToolInfo {
-	if a.mcp == nil {
-		return nil
+	var result []ToolInfo
+	if a.mcp != nil {
+		for _, t := range a.mcp.Tools() {
+			result = append(result, ToolInfo{Name: t.Name, ServerName: t.ServerName})
+		}
 	}
-	raw := a.mcp.Tools()
-	result := make([]ToolInfo, len(raw))
-	for i, t := range raw {
-		result[i] = ToolInfo{Name: t.Name, ServerName: t.ServerName}
+	if a.webSearch != nil {
+		result = append(result, ToolInfo{Name: webSearchToolName, ServerName: "ollama"})
 	}
 	return result
+}
+
+const toolSummarizePrompt = `Summarize this tool output concisely, preserving all key facts, numbers, and actionable data. Remove formatting noise, redundant fields, and verbose structure. Output only the summary.`
+
+// summarizeToolResult condenses a large tool result to save tokens in conversation history.
+func (a *Agent) summarizeToolResult(ctx context.Context, toolName, result string) (string, error) {
+	msgs := []llm.Message{{
+		Role:    "user",
+		Content: fmt.Sprintf("Tool '%s' returned:\n\n%s", toolName, result),
+	}}
+	resp, err := a.router.Chat(ctx, msgs, toolSummarizePrompt, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+// callTool dispatches a tool call to the appropriate handler:
+// built-in tools (web_search) are handled directly; everything else goes to MCP.
+func (a *Agent) callTool(ctx context.Context, name, argsJSON string) (string, error) {
+	if name == webSearchToolName && a.webSearch != nil {
+		return callWebSearch(ctx, *a.webSearch, argsJSON)
+	}
+	if a.mcp != nil {
+		return a.mcp.CallTool(ctx, name, argsJSON)
+	}
+	return "", fmt.Errorf("unknown tool: %s", name)
 }
 
 // storeUserMessage saves the user message. If the store and MCP client both support
@@ -210,7 +280,7 @@ func (a *Agent) storeUserMessage(ctx context.Context, chatID int64, msg llm.Mess
 			sem.AddMessageWithEmbedding(chatID, msg, emb)
 			return emb
 		}
-		a.logger.Debug("embedding unavailable, storing without", "err", err)
+		a.logger.Info("embedding unavailable, storing without", "chat_id", chatID, "err", err)
 	}
 	a.store.AddMessage(chatID, msg)
 	return nil
@@ -219,7 +289,7 @@ func (a *Agent) storeUserMessage(ctx context.Context, chatID int64, msg llm.Mess
 // buildCrossSessionContext searches past sessions and returns a formatted block
 // ready to append to the system prompt. Returns "" when nothing relevant is found
 // or when semantic search is unavailable.
-func (a *Agent) buildCrossSessionContext(ctx context.Context, chatID int64, queryEmb []float32) string {
+func (a *Agent) buildCrossSessionContext(_ context.Context, chatID int64, queryEmb []float32) string {
 	if len(queryEmb) == 0 {
 		return ""
 	}

@@ -141,10 +141,11 @@ func embedOpenAI(ctx context.Context, cfg config.ModelConfig, text string) ([]fl
 	})
 }
 
+var embedHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 // doEmbedRequest executes an HTTP request and parses the response with the given decoder.
 func doEmbedRequest(req *http.Request, decode func([]byte) ([]float32, error)) ([]float32, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := embedHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

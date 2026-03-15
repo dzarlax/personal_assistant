@@ -288,14 +288,23 @@ func (r *Router) classify(ctx context.Context, text string) bool {
 	classifierCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	msgs := []Message{{Role: "user", Content: text}}
+	// Truncate to save tokens — classifier only needs the beginning to judge complexity.
+	classifierText := text
+	if len([]rune(classifierText)) > 500 {
+		classifierText = string([]rune(classifierText)[:500])
+	}
+	msgs := []Message{{Role: "user", Content: classifierText}}
 	resp, err := provider.Chat(classifierCtx, msgs, classifierPrompt, nil)
 	if err != nil {
-		r.logger.Warn("classifier call failed, using primary", "err", err)
+		r.logger.Warn("classifier error, falling back to primary", "classifier", classifierKey, "err", err)
 		return false
 	}
 	result := strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Content)), "yes")
-	r.logger.Debug("classifier result", "needs_reasoning", result)
+	if result {
+		r.logger.Info("classifier routed to reasoner", "text_len", len(text))
+	} else {
+		r.logger.Debug("classifier result: primary", "text_len", len(text))
+	}
 	return result
 }
 

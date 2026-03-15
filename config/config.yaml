@@ -50,6 +50,13 @@ models:
   #   base_url: https://api.openai.com
   #   model: text-embedding-3-small
   #   api_key: ${OPENAI_API_KEY}
+  # Ollama Cloud (https://ollama.com) or local Ollama instance.
+  # Uses native /api/chat protocol with tool calling support.
+  # ollama:
+  #   model: llama4-scout:latest     # any model from ollama.com/search?c=cloud
+  #   api_key: ${OLLAMA_API_KEY}     # required for cloud; optional for local
+  #   base_url: https://ollama.com   # default; set to http://localhost:11434 for local
+  #   max_tokens: 4096
   qwen-flash:
     provider: qwen
     model: qwen3.5-flash
@@ -80,3 +87,10 @@ routing:
 
 tool_filter:
   top_k: 20
+
+# Ollama web search — gives LLM access to real-time web results.
+# Requires an Ollama Cloud API key (ollama.com/settings/keys).
+# web_search:
+#   enabled: true
+#   api_key: ${OLLAMA_API_KEY}
+#   base_url: https://ollama.com   # default

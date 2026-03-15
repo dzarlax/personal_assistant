@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"time"
 
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/store"
@@ -17,6 +18,7 @@ const (
 	compactionCharPrecheck       = 32000 // cheap SQL char pre-check to skip token counting when far below threshold
 	imageTokenCost               = 1000  // approximate visual token cost per image
 	clusterSimilarityThreshold   = 0.65  // cosine threshold for grouping turns into the same topic cluster
+	compactionTimeout            = 2 * time.Minute // max time for entire compaction operation
 )
 
 const compactionSystemPrompt = `Summarise the conversation history into a concise summary in the same language as the conversation.
@@ -77,6 +79,9 @@ func EstimateTokens(msg llm.Message) int {
 // If pre-stored embeddings are available it clusters turns by topic first and
 // summarises each cluster separately, producing a more structured result.
 func (c *Compacter) Compact(ctx context.Context, chatID int64, s store.Store) error {
+	ctx, cancel := context.WithTimeout(ctx, compactionTimeout)
+	defer cancel()
+
 	cs, ok := s.(store.CompactableStore)
 	if !ok {
 		return fmt.Errorf("store does not support compaction")

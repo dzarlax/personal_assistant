@@ -74,13 +74,19 @@ type rawMessage struct {
 }
 
 type rawContentPart struct {
-	Type     string       `json:"type"`
-	Text     string       `json:"text,omitempty"`
-	ImageURL *rawImageURL `json:"image_url,omitempty"`
+	Type       string         `json:"type"`
+	Text       string         `json:"text,omitempty"`
+	ImageURL   *rawImageURL   `json:"image_url,omitempty"`
+	InputAudio *rawInputAudio `json:"input_audio,omitempty"`
 }
 
 type rawImageURL struct {
 	URL string `json:"url"`
+}
+
+type rawInputAudio struct {
+	Data   string `json:"data"`   // base64-encoded audio
+	Format string `json:"format"` // "wav", "mp3", "ogg"
 }
 
 type rawToolCall struct {
@@ -211,6 +217,15 @@ func buildMessages(messages []Message, systemPrompt string, vision bool) []rawMe
 						parts = append(parts, rawContentPart{
 							Type:     "image_url",
 							ImageURL: &rawImageURL{URL: part.ImageURL.URL},
+						})
+					}
+				case "input_audio":
+					if !vision {
+						parts = append(parts, rawContentPart{Type: "text", Text: "[audio]"})
+					} else if part.InputAudio != nil {
+						parts = append(parts, rawContentPart{
+							Type:       "input_audio",
+							InputAudio: &rawInputAudio{Data: part.InputAudio.Data, Format: part.InputAudio.Format},
 						})
 					}
 				}

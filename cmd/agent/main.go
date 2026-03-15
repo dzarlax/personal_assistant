@@ -75,6 +75,10 @@ func main() {
 		p, e := llm.NewQwen(cfg.Models.QwenMax)
 		addProvider("qwen-max", p, e)
 	}
+	if cfg.Models.Ollama.Model != "" {
+		p, e := llm.NewOllama(cfg.Models.Ollama)
+		addProvider("ollama", p, e)
+	}
 
 	// Ensure the default routing provider is available.
 	if providers[cfg.Routing.Default] == nil {
@@ -167,6 +171,18 @@ func main() {
 
 	ag := agent.New(router, s, mcpClient, compacter, string(sysPromptBytes), logger)
 
+	if cfg.WebSearch.Enabled {
+		baseURL := cfg.WebSearch.BaseURL
+		if baseURL == "" {
+			baseURL = "https://ollama.com"
+		}
+		ag.EnableWebSearch(agent.WebSearchConfig{
+			BaseURL: baseURL,
+			APIKey:  cfg.WebSearch.APIKey,
+		})
+		logger.Info("web search enabled", "base_url", baseURL)
+	}
+
 	handler, err := telegram.NewHandler(cfg.Telegram, ag, logger)
 	if err != nil {
 		logger.Error("failed to init Telegram handler", "err", err)
@@ -179,7 +195,22 @@ func main() {
 	logger.Info("agent started", "model", router.Name(), "providers", len(providers), "mcp_servers", len(mcpServers))
 	handler.NotifyMissingRouting()
 	handler.Start(ctx)
+
 	logger.Info("draining pending batches")
-	handler.Drain()
+	drainDone := make(chan struct{})
+	go func() {
+		handler.Drain()
+		close(drainDone)
+	}()
+	select {
+	case <-drainDone:
+		logger.Info("drain completed")
+	case <-time.After(30 * time.Second):
+		logger.Warn("drain timed out after 30s, proceeding with shutdown")
+	}
+
+	if mcpClient != nil {
+		mcpClient.Close()
+	}
 	logger.Info("agent stopped")
 }

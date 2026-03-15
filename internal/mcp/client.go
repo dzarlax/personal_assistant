@@ -221,6 +221,13 @@ func (c *Client) Tools() []Tool {
 	return c.tools
 }
 
+// Close releases resources held by the MCP client (HTTP connection pools).
+func (c *Client) Close() {
+	for _, srv := range c.servers {
+		srv.http.CloseIdleConnections()
+	}
+}
+
 // CallTool executes a tool on the appropriate MCP server.
 // On network failure it attempts one reconnect before giving up.
 func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (string, error) {
@@ -357,6 +364,7 @@ func (s *server) callTool(ctx context.Context, name string, args json.RawMessage
 		return "", fmt.Errorf("tool error: %s", text)
 	}
 	if len(text) > maxToolResultLen {
+		slog.Warn("tool result truncated", "tool", name, "original_len", len(text), "max", maxToolResultLen)
 		text = text[:maxToolResultLen] + "\n...[truncated]"
 	}
 	return text, nil

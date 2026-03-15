@@ -81,7 +81,7 @@ func (s *SQLite) AddMessage(chatID int64, msg llm.Message) {
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID)
 	if err != nil {
-		slog.Error("sqlite AddMessage failed", "role", msg.Role, "err", err)
+		slog.Error("sqlite AddMessage failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
 	}
 }
 
@@ -100,7 +100,7 @@ func (s *SQLite) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []fl
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID, embBlob)
 	if err != nil {
-		slog.Error("sqlite AddMessageWithEmbedding failed", "role", msg.Role, "err", err)
+		slog.Error("sqlite AddMessageWithEmbedding failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
 	}
 }
 
