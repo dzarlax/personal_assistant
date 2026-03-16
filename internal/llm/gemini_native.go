@@ -133,14 +133,13 @@ func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, sys
 		}
 	}
 
-	// Build tools: function declarations + optional grounding.
+	// Build tools: function declarations OR grounding (Gemini doesn't allow both).
 	var toolDecls []geminiToolDecl
 	if len(tools) > 0 {
 		toolDecls = append(toolDecls, geminiToolDecl{
 			FunctionDeclarations: buildGeminiFuncDecls(tools),
 		})
-	}
-	if p.grounding {
+	} else if p.grounding {
 		toolDecls = append(toolDecls, geminiToolDecl{
 			GoogleSearch: &struct{}{},
 		})
