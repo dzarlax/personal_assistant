@@ -32,7 +32,23 @@ const (
 	forwardFilterMinSize  = 3         // only filter by relevance when more than this many forwards are buffered
 	forwardSelectThresh   = 0.25      // min cosine similarity to include a buffered forward
 	maxConcurrentUpdates  = 10        // limit concurrent goroutines processing updates
+	maxDocumentSize       = 20 * 1024 * 1024 // 20 MB cap on document uploads
 )
+
+// supportedDocMIME lists MIME types accepted as inline documents for the LLM.
+var supportedDocMIME = map[string]bool{
+	"application/pdf":    true,
+	"text/plain":         true,
+	"text/csv":           true,
+	"text/html":          true,
+	"text/markdown":      true,
+	"application/json":   true,
+	"application/xml":    true,
+}
+
+func isSupportedDocument(mime string) bool {
+	return supportedDocMIME[mime]
+}
 
 // forwardEntry is a single forwarded message with its pre-computed embedding.
 // text already includes the "[Forwarded from ...]" header prefix.
@@ -273,6 +289,27 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 				Type: "image_url",
 				ImageURL: &llm.ImageURL{
 					URL: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data),
+				},
+			})
+		}
+
+		// Download documents (PDF, etc.) — native Gemini only
+		if msg.Document != nil && isSupportedDocument(msg.Document.MimeType) {
+			data, err := h.downloadFile(msg.Document.FileID)
+			if err != nil {
+				h.logger.Error("failed to download document", "err", err, "file", msg.Document.FileName)
+				continue
+			}
+			if len(data) > maxDocumentSize {
+				h.logger.Warn("document too large, skipping", "file", msg.Document.FileName, "size", len(data))
+				continue
+			}
+			h.logger.Info("document attached", "file", msg.Document.FileName, "mime", msg.Document.MimeType, "size", len(data))
+			imageParts = append(imageParts, llm.ContentPart{
+				Type: "inline_data",
+				InlineData: &llm.InlineData{
+					MIMEType: msg.Document.MimeType,
+					Data:     base64.StdEncoding.EncodeToString(data),
 				},
 			})
 		}

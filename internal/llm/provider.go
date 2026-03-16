@@ -15,10 +15,11 @@ type Message struct {
 
 // ContentPart represents a single part of a multimodal message.
 type ContentPart struct {
-	Type       string      `json:"type"` // "text", "image_url", "input_audio"
+	Type       string      `json:"type"` // "text", "image_url", "input_audio", "inline_data"
 	Text       string      `json:"text,omitempty"`
 	ImageURL   *ImageURL   `json:"image_url,omitempty"`
 	InputAudio *InputAudio `json:"input_audio,omitempty"`
+	InlineData *InlineData `json:"inline_data,omitempty"` // PDF, audio, video — native Gemini only
 }
 
 type ImageURL struct {
@@ -28,6 +29,13 @@ type ImageURL struct {
 type InputAudio struct {
 	Data   string `json:"data"`   // base64-encoded audio
 	Format string `json:"format"` // "ogg", "mp3", "wav"
+}
+
+// InlineData holds base64-encoded file content with its MIME type.
+// Supported by native Gemini provider for PDFs, audio, video, etc.
+type InlineData struct {
+	MIMEType string `json:"mime_type"` // e.g. "application/pdf", "audio/ogg"
+	Data     string `json:"data"`      // base64-encoded
 }
 
 type Tool struct {

@@ -228,6 +228,8 @@ func buildMessages(messages []Message, systemPrompt string, vision bool) []rawMe
 							InputAudio: &rawInputAudio{Data: part.InputAudio.Data, Format: part.InputAudio.Format},
 						})
 					}
+				case "inline_data":
+					parts = append(parts, rawContentPart{Type: "text", Text: "[document]"})
 				}
 			}
 			msg.Content = parts

@@ -268,8 +268,17 @@ func (p *GeminiNativeProvider) buildContents(messages []Message) []geminiContent
 					if mp.InputAudio != nil {
 						parts = append(parts, geminiPart{
 							InlineData: &geminiInlineData{
-								MIMEType: mp.InputAudio.Format, // we pass MIME type here
+								MIMEType: mp.InputAudio.Format,
 								Data:     mp.InputAudio.Data,
+							},
+						})
+					}
+				case "inline_data":
+					if mp.InlineData != nil {
+						parts = append(parts, geminiPart{
+							InlineData: &geminiInlineData{
+								MIMEType: mp.InlineData.MIMEType,
+								Data:     mp.InlineData.Data,
 							},
 						})
 					}
