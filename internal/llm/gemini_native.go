@@ -331,7 +331,7 @@ func buildGeminiFuncDecls(tools []Tool) []geminiFuncDecl {
 	for _, t := range tools {
 		var params any
 		if len(t.InputSchema) > 0 {
-			params = json.RawMessage(t.InputSchema)
+			params = sanitizeSchema(t.InputSchema)
 		} else {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
@@ -342,4 +342,44 @@ func buildGeminiFuncDecls(tools []Tool) []geminiFuncDecl {
 		})
 	}
 	return decls
+}
+
+// unsupportedSchemaFields lists JSON Schema fields that Gemini's native API does not accept.
+var unsupportedSchemaFields = map[string]bool{
+	"additionalProperties": true,
+	"$schema":              true,
+	"$ref":                 true,
+	"definitions":          true,
+	"$defs":                true,
+	"default":              true,
+	"examples":             true,
+	"title":                true,
+}
+
+// sanitizeSchema removes JSON Schema fields unsupported by Gemini's native API.
+func sanitizeSchema(raw json.RawMessage) any {
+	var obj any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return json.RawMessage(raw)
+	}
+	stripUnsupported(obj)
+	return obj
+}
+
+func stripUnsupported(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for key := range val {
+			if unsupportedSchemaFields[key] {
+				delete(val, key)
+			}
+		}
+		for _, child := range val {
+			stripUnsupported(child)
+		}
+	case []any:
+		for _, item := range val {
+			stripUnsupported(item)
+		}
+	}
 }
