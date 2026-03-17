@@ -88,11 +88,6 @@ routing:
 tool_filter:
   top_k: 20
 
-# Native Gemini API settings (applies to gemini-flash and gemini-flash-lite).
-# Grounding gives Gemini access to Google Search — 5000 free queries/month.
-gemini_native:
-  grounding: true
-
 # Ollama web search — gives LLM access to real-time web results.
 # Requires an Ollama Cloud API key (ollama.com/settings/keys).
 web_search:

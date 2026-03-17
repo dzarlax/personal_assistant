@@ -21,17 +21,16 @@ const (
 var geminiHTTPClient = &http.Client{Timeout: geminiDefaultTimeout}
 
 // GeminiNativeProvider uses the native Gemini generateContent API.
-// Supports inline audio/video/documents, Google Search grounding, and thinking mode.
+// Supports inline audio/video/documents and native function calling.
 type GeminiNativeProvider struct {
 	model     string
 	apiKey    string
 	maxTokens int
 	provName  string
-	grounding bool // enable Google Search grounding
 }
 
 // NewGeminiNative creates a provider using the native Gemini API.
-func NewGeminiNative(cfg config.ModelConfig, grounding bool) (*GeminiNativeProvider, error) {
+func NewGeminiNative(cfg config.ModelConfig) (*GeminiNativeProvider, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("gemini-native: api_key is required")
 	}
@@ -47,7 +46,6 @@ func NewGeminiNative(cfg config.ModelConfig, grounding bool) (*GeminiNativeProvi
 		apiKey:    cfg.APIKey,
 		maxTokens: maxTokens,
 		provName:  "gemini-native",
-		grounding: grounding,
 	}, nil
 }
 
@@ -94,7 +92,6 @@ type geminiFunctionResp struct {
 
 type geminiToolDecl struct {
 	FunctionDeclarations []geminiFuncDecl `json:"functionDeclarations,omitempty"`
-	GoogleSearch         *struct{}        `json:"google_search,omitempty"`
 }
 
 type geminiFuncDecl struct {
@@ -133,19 +130,10 @@ func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, sys
 		}
 	}
 
-	// Build tools: function declarations OR grounding (Gemini doesn't allow both).
-	var toolDecls []geminiToolDecl
 	if len(tools) > 0 {
-		toolDecls = append(toolDecls, geminiToolDecl{
+		req.Tools = []geminiToolDecl{{
 			FunctionDeclarations: buildGeminiFuncDecls(tools),
-		})
-	} else if p.grounding {
-		toolDecls = append(toolDecls, geminiToolDecl{
-			GoogleSearch: &struct{}{},
-		})
-	}
-	if len(toolDecls) > 0 {
-		req.Tools = toolDecls
+		}}
 	}
 
 	body, err := json.Marshal(req)

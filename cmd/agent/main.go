@@ -56,11 +56,11 @@ func main() {
 		addProvider("deepseek-r1", p, e)
 	}
 	if cfg.Models.GeminiFlashLite.APIKey != "" {
-		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlashLite, cfg.GeminiNative.Grounding)
+		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlashLite)
 		addProvider("gemini-flash-lite", p, e)
 	}
 	if cfg.Models.GeminiFlash.APIKey != "" {
-		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlash, cfg.GeminiNative.Grounding)
+		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlash)
 		addProvider("gemini-flash", p, e)
 	}
 	if cfg.Models.QwenFlash.APIKey != "" {
