@@ -228,6 +228,57 @@ func (c *Client) Close() {
 	}
 }
 
+// Reconnect closes existing connections, replaces the server list with new configs,
+// re-initializes all servers, and re-embeds tools if embeddings were enabled.
+// Returns the number of tools discovered after reconnect.
+func (c *Client) Reconnect(ctx context.Context, configs map[string]config.MCPServerConfig) (int, error) {
+	// Close old connections.
+	c.Close()
+
+	// Reset state.
+	c.servers = make(map[string]*server)
+	c.tools = nil
+	c.toolServers = make(map[string]string)
+	c.embeddingsReady = false
+
+	// Build new servers (same logic as NewClient).
+	for name, cfg := range configs {
+		if err := validateServerURL(cfg.URL); err != nil {
+			c.logger.Warn("mcp server URL rejected", "server", name, "url", cfg.URL, "err", err)
+			continue
+		}
+		srv := &server{
+			name:    name,
+			url:     cfg.URL,
+			headers: cfg.Headers,
+			http:    &http.Client{Timeout: 30 * time.Second},
+		}
+		if len(cfg.AllowTools) > 0 {
+			srv.allowTools = make(map[string]bool, len(cfg.AllowTools))
+			for _, t := range cfg.AllowTools {
+				srv.allowTools[t] = true
+			}
+		}
+		if len(cfg.DenyTools) > 0 {
+			srv.denyTools = make(map[string]bool, len(cfg.DenyTools))
+			for _, t := range cfg.DenyTools {
+				srv.denyTools[t] = true
+			}
+		}
+		c.servers[name] = srv
+	}
+
+	// Initialize and discover tools.
+	c.Initialize(ctx)
+
+	// Re-embed tools if embeddings were configured.
+	if c.embeddingCfg.APIKey != "" || c.embeddingCfg.BaseURL != "" {
+		c.EmbedTools(ctx)
+	}
+
+	return len(c.tools), nil
+}
+
 // CallTool executes a tool on the appropriate MCP server.
 // On network failure it attempts one reconnect before giving up.
 func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (string, error) {

@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/mcp"
 	"telegram-agent/internal/store"
@@ -229,6 +230,15 @@ func (a *Agent) EmbedText(ctx context.Context, text string) ([]float32, error) {
 		return nil, nil
 	}
 	return a.mcp.EmbedText(ctx, text)
+}
+
+// ReloadMCP re-reads the MCP config file, reconnects all servers, and re-discovers tools.
+// Returns the number of tools available after reload.
+func (a *Agent) ReloadMCP(ctx context.Context, configs map[string]config.MCPServerConfig) (int, error) {
+	if a.mcp == nil {
+		return 0, fmt.Errorf("MCP client not initialized")
+	}
+	return a.mcp.Reconnect(ctx, configs)
 }
 
 func (a *Agent) ListTools() []ToolInfo {
