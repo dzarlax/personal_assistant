@@ -633,6 +633,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"/model <name> — switch model\n"+
 				"/model reset — back to auto\\-routing\n"+
 				"/tools — list MCP tools\n"+
+				"/mcp update — reload MCP servers\n"+
 				"/help — this help\n\n"+
 				"*Model:* `%s`\n"+
 				"Responses longer than 4096 chars are sent as a `.md` file\\.",
@@ -690,6 +691,8 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		h.bot.Send(msg) //nolint:errcheck
 	case "tools":
 		h.handleToolsCommand(chatID)
+	case "mcp":
+		h.handleMCPCommand(chatID, msg.CommandArguments())
 	case "stats":
 		h.handleStatsCommand(chatID)
 	default:
@@ -991,11 +994,40 @@ func registerCommands(bot *tgbotapi.BotAPI) error {
 		{Command: "model", Description: "Show / switch model"},
 		{Command: "routing", Description: "Configure routing (inline UI)"},
 		{Command: "tools", Description: "List connected MCP tools"},
+		{Command: "mcp", Description: "MCP management (update/reload)"},
 		{Command: "stats", Description: "Show history size, model, last compact"},
 		{Command: "help", Description: "Help"},
 	}
 	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
 	return err
+}
+
+func (h *Handler) handleMCPCommand(chatID int64, args string) {
+	switch strings.TrimSpace(args) {
+	case "update", "reload":
+		h.sendPlain(chatID, "Reloading MCP servers...")
+		configs, err := config.LoadMCPServers("config/mcp.json")
+		if err != nil {
+			h.sendPlain(chatID, "Error loading mcp.json: "+err.Error())
+			return
+		}
+		if len(configs) == 0 {
+			h.sendPlain(chatID, "No MCP servers configured in mcp.json.")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		toolCount, err := h.agent.ReloadMCP(ctx, configs)
+		if err != nil {
+			h.sendPlain(chatID, "Error: "+err.Error())
+			return
+		}
+		h.sendPlain(chatID, fmt.Sprintf("MCP reloaded: %d servers, %d tools.", len(configs), toolCount))
+	default:
+		h.send(chatID,
+			"*MCP commands:*\n\n"+
+				"/mcp update — reload mcp\\.json and reconnect all servers")
+	}
 }
 
 func (h *Handler) handleToolsCommand(chatID int64) {
