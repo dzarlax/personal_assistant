@@ -109,6 +109,24 @@ func TestMarkdown_BulletListMultiline(t *testing.T) {
 	assertMD(t, input, want)
 }
 
+// --- Checkboxes ---
+
+func TestMarkdown_CheckboxUnchecked(t *testing.T) {
+	assertMD(t, "- [ ] task", "☐ task")
+}
+
+func TestMarkdown_CheckboxChecked(t *testing.T) {
+	assertMD(t, "- [x] done", "☑ done")
+}
+
+func TestMarkdown_CheckboxCheckedUpper(t *testing.T) {
+	assertMD(t, "* [X] done", "☑ done")
+}
+
+func TestMarkdown_CheckboxWithBold(t *testing.T) {
+	assertMD(t, "*   [ ] **Паспорт** (загран)", "☐ <b>Паспорт</b> (загран)")
+}
+
 // --- HTML escaping ---
 
 func TestMarkdown_HTMLInText(t *testing.T) {
@@ -148,6 +166,42 @@ func TestMarkdown_MultilineDocument(t *testing.T) {
 	}
 	if !contains(got, "• item 1") {
 		t.Errorf("missing bullet in %q", got)
+	}
+}
+
+// --- splitMessage ---
+
+func TestSplitMessage_Short(t *testing.T) {
+	parts := splitMessage("hello", 100)
+	if len(parts) != 1 || parts[0] != "hello" {
+		t.Errorf("unexpected: %v", parts)
+	}
+}
+
+func TestSplitMessage_ParagraphBoundary(t *testing.T) {
+	text := "first paragraph\n\nsecond paragraph\n\nthird paragraph"
+	parts := splitMessage(text, 30)
+	if len(parts) < 2 {
+		t.Errorf("expected multiple parts, got %d: %v", len(parts), parts)
+	}
+	// Verify no part exceeds maxLen
+	for i, p := range parts {
+		if len(p) > 30 {
+			t.Errorf("part %d exceeds maxLen: %d chars", i, len(p))
+		}
+	}
+}
+
+func TestSplitMessage_LineBoundary(t *testing.T) {
+	text := "line one\nline two\nline three\nline four"
+	parts := splitMessage(text, 20)
+	if len(parts) < 2 {
+		t.Errorf("expected multiple parts, got %d: %v", len(parts), parts)
+	}
+	for i, p := range parts {
+		if len(p) > 20 {
+			t.Errorf("part %d exceeds maxLen: %d chars", i, len(p))
+		}
 	}
 }
 

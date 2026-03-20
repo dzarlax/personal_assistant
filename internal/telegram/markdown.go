@@ -19,6 +19,8 @@ var (
 	reHeader      = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
 	reBulletItem  = regexp.MustCompile(`^(\s*)[-*]\s+(.+)$`)
 	reNumItem     = regexp.MustCompile(`^(\s*\d+\.)\s+(.+)$`)
+	reCheckbox    = regexp.MustCompile(`^\[[ ]\]\s*`)
+	reCheckboxDone = regexp.MustCompile(`^\[[xX]\]\s*`)
 	rePlaceholder = regexp.MustCompile(`\x00(\d+)\x00`)
 )
 
@@ -64,7 +66,16 @@ func processLine(line string) string {
 	}
 	if m := reBulletItem.FindStringSubmatch(line); m != nil {
 		indent := strings.Repeat("  ", len(m[1])/2)
-		return indent + "• " + processInline(m[2])
+		rest := m[2]
+		prefix := "• "
+		if reCheckboxDone.MatchString(rest) {
+			rest = reCheckboxDone.ReplaceAllString(rest, "")
+			prefix = "☑ "
+		} else if reCheckbox.MatchString(rest) {
+			rest = reCheckbox.ReplaceAllString(rest, "")
+			prefix = "☐ "
+		}
+		return indent + prefix + processInline(rest)
 	}
 	if m := reNumItem.FindStringSubmatch(line); m != nil {
 		return html.EscapeString(m[1]) + " " + processInline(m[2])

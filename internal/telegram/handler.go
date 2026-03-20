@@ -717,44 +717,88 @@ func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 }
 
 func (h *Handler) sendResponse(chatID int64, text string) {
-	if len(text) < maxMessageLen {
-		h.sendSingleMessage(chatID, text)
+	// Fast path: short message.
+	htmlText := markdownToTelegramHTML(text)
+	if len(htmlText) < maxMessageLen {
+		h.sendHTMLWithFallback(chatID, text, htmlText)
 		return
 	}
 
-	// Split long responses into multiple messages.
-	parts := splitMessage(text, maxMessageLen-100) // leave margin for safety
+	// Split markdown into chunks, convert each to HTML.
+	// Use conservative limit — HTML tags expand the text ~30%.
+	mdChunks := splitMessage(text, maxMessageLen*2/3)
+	var htmlChunks []htmlChunk
+	for _, md := range mdChunks {
+		htm := markdownToTelegramHTML(md)
+		if len(htm) < maxMessageLen {
+			htmlChunks = append(htmlChunks, htmlChunk{raw: md, html: htm})
+		} else {
+			// HTML still too long — re-split the markdown piece more aggressively.
+			subMD := splitMessage(md, maxMessageLen/3)
+			for _, sm := range subMD {
+				sh := markdownToTelegramHTML(sm)
+				htmlChunks = append(htmlChunks, htmlChunk{raw: sm, html: sh})
+			}
+		}
+	}
+
 	allOK := true
-	for i, part := range parts {
-		if !h.sendSingleMessage(chatID, part) {
-			h.logger.Warn("chunk send failed, falling back to file", "chunk", i+1, "of", len(parts))
-			allOK = false
-			break
+	for i, ch := range htmlChunks {
+		if len(ch.html) < maxMessageLen {
+			if !h.sendHTMLMsg(chatID, ch.html) {
+				// Retry as plain text.
+				if !h.sendPlainMsg(chatID, ch.raw) {
+					h.logger.Warn("chunk send failed", "chunk", i+1, "of", len(htmlChunks))
+					allOK = false
+					break
+				}
+			}
+		} else {
+			// Still too long after aggressive split — send plain, truncated.
+			if !h.sendPlainMsg(chatID, ch.raw[:min(len(ch.raw), maxMessageLen-50)]) {
+				allOK = false
+				break
+			}
 		}
 	}
 	if allOK {
 		return
 	}
 
-	// Fallback: send as file.
+	// Last resort: send as file.
 	h.sendAsFile(chatID, text)
 }
 
-// sendSingleMessage sends one chunk as HTML (with plain-text fallback). Returns true on success.
-func (h *Handler) sendSingleMessage(chatID int64, text string) bool {
-	htmlText := markdownToTelegramHTML(text)
+type htmlChunk struct {
+	raw  string
+	html string
+}
+
+// sendHTMLWithFallback sends a single HTML message, falling back to plain text.
+func (h *Handler) sendHTMLWithFallback(chatID int64, rawText, htmlText string) {
+	if h.sendHTMLMsg(chatID, htmlText) {
+		return
+	}
+	h.logger.Warn("html send failed, retrying as plain text")
+	msg := tgbotapi.NewMessage(chatID, rawText)
+	if _, err := h.bot.Send(msg); err != nil {
+		h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
+	}
+}
+
+// sendHTMLMsg sends an HTML message. Returns true on success.
+func (h *Handler) sendHTMLMsg(chatID int64, htmlText string) bool {
 	msg := tgbotapi.NewMessage(chatID, htmlText)
 	msg.ParseMode = tgbotapi.ModeHTML
-	if _, err := h.bot.Send(msg); err != nil {
-		h.logger.Warn("html send failed, retrying as plain text", "err", err)
-		msg.ParseMode = ""
-		msg.Text = text
-		if _, err := h.bot.Send(msg); err != nil {
-			h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
-			return false
-		}
-	}
-	return true
+	_, err := h.bot.Send(msg)
+	return err == nil
+}
+
+// sendPlainMsg sends a plain-text message. Returns true on success.
+func (h *Handler) sendPlainMsg(chatID int64, text string) bool {
+	msg := tgbotapi.NewMessage(chatID, text)
+	_, err := h.bot.Send(msg)
+	return err == nil
 }
 
 func (h *Handler) sendAsFile(chatID int64, text string) {
