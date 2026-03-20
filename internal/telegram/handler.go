@@ -717,22 +717,88 @@ func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 }
 
 func (h *Handler) sendResponse(chatID int64, text string) {
-	if len(text) >= maxMessageLen {
-		h.sendAsFile(chatID, text)
+	// Fast path: short message.
+	htmlText := markdownToTelegramHTML(text)
+	if len(htmlText) < maxMessageLen {
+		h.sendHTMLWithFallback(chatID, text, htmlText)
 		return
 	}
 
-	htmlText := markdownToTelegramHTML(text)
-	msg := tgbotapi.NewMessage(chatID, htmlText)
-	msg.ParseMode = tgbotapi.ModeHTML
-	if _, err := h.bot.Send(msg); err != nil {
-		h.logger.Warn("html send failed, retrying as plain text", "err", err)
-		msg.ParseMode = ""
-		msg.Text = text
-		if _, err := h.bot.Send(msg); err != nil {
-			h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
+	// Split markdown into chunks, convert each to HTML.
+	// Use conservative limit — HTML tags expand the text ~30%.
+	mdChunks := splitMessage(text, maxMessageLen*2/3)
+	var htmlChunks []htmlChunk
+	for _, md := range mdChunks {
+		htm := markdownToTelegramHTML(md)
+		if len(htm) < maxMessageLen {
+			htmlChunks = append(htmlChunks, htmlChunk{raw: md, html: htm})
+		} else {
+			// HTML still too long — re-split the markdown piece more aggressively.
+			subMD := splitMessage(md, maxMessageLen/3)
+			for _, sm := range subMD {
+				sh := markdownToTelegramHTML(sm)
+				htmlChunks = append(htmlChunks, htmlChunk{raw: sm, html: sh})
+			}
 		}
 	}
+
+	allOK := true
+	for i, ch := range htmlChunks {
+		if len(ch.html) < maxMessageLen {
+			if !h.sendHTMLMsg(chatID, ch.html) {
+				// Retry as plain text.
+				if !h.sendPlainMsg(chatID, ch.raw) {
+					h.logger.Warn("chunk send failed", "chunk", i+1, "of", len(htmlChunks))
+					allOK = false
+					break
+				}
+			}
+		} else {
+			// Still too long after aggressive split — send plain, truncated.
+			if !h.sendPlainMsg(chatID, ch.raw[:min(len(ch.raw), maxMessageLen-50)]) {
+				allOK = false
+				break
+			}
+		}
+	}
+	if allOK {
+		return
+	}
+
+	// Last resort: send as file.
+	h.sendAsFile(chatID, text)
+}
+
+type htmlChunk struct {
+	raw  string
+	html string
+}
+
+// sendHTMLWithFallback sends a single HTML message, falling back to plain text.
+func (h *Handler) sendHTMLWithFallback(chatID int64, rawText, htmlText string) {
+	if h.sendHTMLMsg(chatID, htmlText) {
+		return
+	}
+	h.logger.Warn("html send failed, retrying as plain text")
+	msg := tgbotapi.NewMessage(chatID, rawText)
+	if _, err := h.bot.Send(msg); err != nil {
+		h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
+	}
+}
+
+// sendHTMLMsg sends an HTML message. Returns true on success.
+func (h *Handler) sendHTMLMsg(chatID int64, htmlText string) bool {
+	msg := tgbotapi.NewMessage(chatID, htmlText)
+	msg.ParseMode = tgbotapi.ModeHTML
+	_, err := h.bot.Send(msg)
+	return err == nil
+}
+
+// sendPlainMsg sends a plain-text message. Returns true on success.
+func (h *Handler) sendPlainMsg(chatID int64, text string) bool {
+	msg := tgbotapi.NewMessage(chatID, text)
+	_, err := h.bot.Send(msg)
+	return err == nil
 }
 
 func (h *Handler) sendAsFile(chatID int64, text string) {
@@ -751,6 +817,43 @@ func (h *Handler) sendAsFile(chatID int64, text string) {
 		h.logger.Error("failed to send document", "err", err)
 		h.sendPlain(chatID, text[:maxMessageLen-50]+"...\n\n_(response truncated)_")
 	}
+}
+
+// splitMessage splits text into chunks of at most maxLen bytes,
+// breaking at paragraph boundaries (\n\n), then line boundaries (\n).
+func splitMessage(text string, maxLen int) []string {
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+
+	var parts []string
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			parts = append(parts, text)
+			break
+		}
+
+		chunk := text[:maxLen]
+
+		// Try to break at a paragraph boundary.
+		if idx := strings.LastIndex(chunk, "\n\n"); idx > maxLen/4 {
+			parts = append(parts, text[:idx])
+			text = strings.TrimLeft(text[idx:], "\n")
+			continue
+		}
+
+		// Try to break at a line boundary.
+		if idx := strings.LastIndex(chunk, "\n"); idx > maxLen/4 {
+			parts = append(parts, text[:idx])
+			text = text[idx+1:]
+			continue
+		}
+
+		// Hard break at maxLen.
+		parts = append(parts, chunk)
+		text = text[maxLen:]
+	}
+	return parts
 }
 
 // send sends a bot-generated message with MarkdownV2 (text must be pre-escaped).
