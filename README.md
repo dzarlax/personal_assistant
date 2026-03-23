@@ -31,60 +31,47 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - [Telegram Bot Token](https://t.me/BotFather)
 - At least one LLM API key (DeepSeek, Gemini, Qwen, or Ollama Cloud)
 
-## Quick start (NAS / Pi / server)
-
-No source code needed — just pull the pre-built image:
+## Quick start
 
 ```bash
-# 1. Create the directory structure
-mkdir -p my-assistant/config my-assistant/data
-cd my-assistant
+git clone https://github.com/dzarlax/personal_assistant.git
+cd personal_assistant
 
-# 2. Download compose file
-curl -O https://raw.githubusercontent.com/dzarlax/personal_assistant/main/docker-compose.yml
+# Setup configs from examples, create data dir
+./scripts/setup.sh
 
-# 3. Create config files
-curl -o config/config.yaml https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/config.yaml
-curl -o config/system_prompt.md https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/system_prompt.md.example
-curl -o config/mcp.json https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/mcp.json.example
-curl -o .env https://raw.githubusercontent.com/dzarlax/personal_assistant/main/.env.example
-
-# 4. Fill in secrets
+# Fill in your API keys and Telegram token
 nano .env
 
-# 5. Start
-docker compose up -d
-docker compose logs -f
-```
-
-## Setup (from source)
-
-```bash
-cp .env.example .env
-# fill in your API keys and Telegram token
-
-cp config/mcp.json.example config/mcp.json
-# configure MCP servers (optional)
-
-cp config/system_prompt.md.example config/system_prompt.md
-# personalise the assistant
-
-mkdir -p data
+# Start
+make docker-up
+make logs
 ```
 
 **Get your Telegram chat ID:** send `/start` to [@userinfobot](https://t.me/userinfobot).
 
-## Running
+### With Claude Bridge (optional)
 
-**Local:**
 ```bash
-make run
+# Same as above, plus Claude Bridge setup:
+./scripts/setup.sh --with-claude /path/to/assistant_context
+
+# Edit .env (API keys + auto-generated CLAUDE_BRIDGE_TOKEN)
+nano .env
+
+# Start bridge on host, bot in Docker
+./bridge/claude-bridge bridge/bridge.yaml &
+make docker-up
 ```
 
-**Docker (from source):**
+Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and an Anthropic Max/Pro subscription. For production, run the bridge as a systemd service.
+
+## Running
+
 ```bash
-make docker-up   # copies missing example files, then starts
-make logs
+make run          # local (loads .env, runs go)
+make docker-up    # Docker (copies missing example configs, starts)
+make logs         # follow Docker logs
 ```
 
 Data is stored in `./data/conversations.db` (mounted as a volume in Docker).
@@ -312,46 +299,13 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 
 Use Claude from your Anthropic Max/Pro subscription as an LLM provider — no separate API key needed. A lightweight Go service runs on the host and wraps `claude -p` CLI.
 
-### Setup
-
-```bash
-# 1. Install Claude Code CLI on the host and login
-npm install -g @anthropic-ai/claude-code
-claude  # login with your Anthropic account
-
-# 2. Create project context (CLAUDE.md, permissions, MCP symlink)
-./scripts/init-context.sh /path/to/assistant_context
-
-# 3. Build and start the bridge
-cd bridge
-cat > bridge.yaml << EOF
-listen: "127.0.0.1:9900"
-project_dir: "/path/to/assistant_context"
-cli_path: "claude"
-default_timeout: 120
-max_concurrent: 2
-auth_token: "your-shared-secret"
-EOF
-go build -o claude-bridge . && ./claude-bridge bridge.yaml
-
-# 4. Add to bot config (config/config.yaml)
-#    models:
-#      claude:
-#        base_url: http://host.docker.internal:9900
-#        api_key: "your-shared-secret"
-#        max_tokens: 120
-#    routing:
-#      reasoner: claude
-
-# 5. Add to .env
-#    CLAUDE_BRIDGE_TOKEN=your-shared-secret
-
-# 6. Add to docker-compose.yml under services.agent:
-#    extra_hosts:
-#      - "host.docker.internal:host-gateway"
+```
+Telegram → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
 ```
 
-For production, run the bridge as a systemd service (`Restart=on-failure`). Each `claude -p` call takes ~5-8s (CLI cold start). No streaming, no images (multimodal goes to Gemini), stateless (history formatted into prompt).
+Setup is handled by `./scripts/setup.sh --with-claude /path/to/assistant_context` — see [Quick start](#quick-start). The script creates the context directory, builds the bridge binary, generates a shared auth token, and updates `.env`.
+
+**Limitations:** ~5-8s per request (CLI cold start), no streaming, no images (routed to Gemini), stateless (history formatted into prompt).
 
 ## Companion MCP Servers
 
