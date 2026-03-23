@@ -1,0 +1,73 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+
+      "WebFetch",
+      "WebSearch",
+
+      "Write(notes/**)",
+      "Write(tasks/**)",
+      "Edit(notes/**)",
+      "Edit(tasks/**)",
+
+      "Bash(date:*)",
+      "Bash(uptime:*)",
+      "Bash(df:*)",
+      "Bash(free:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker stats:*)",
+      "Bash(docker logs:*)",
+      "Bash(systemctl status:*)",
+      "Bash(cat /proc/loadavg)",
+      "Bash(curl -s http://localhost:*)",
+      "Bash(ping -c 3:*)",
+      "Bash(dig:*)",
+      "Bash(ss -tlnp)",
+      "Bash(tail:*)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+
+      "mcp__personal-memory__*",
+      "mcp__health-dashboard__*",
+      "mcp__tasks__*"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(rm -rf:*)",
+      "Bash(kill:*)",
+      "Bash(pkill:*)",
+      "Bash(reboot:*)",
+      "Bash(shutdown:*)",
+      "Bash(systemctl stop:*)",
+      "Bash(systemctl restart:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker kill:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(sudo:*)",
+      "Bash(su:*)",
+      "Bash(passwd:*)",
+      "Bash(apt:*)",
+      "Bash(pip:*)",
+      "Bash(npm:*)",
+      "Bash(wget:*)",
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(crontab:*)",
+      "Bash(iptables:*)",
+
+      "Write(.env)",
+      "Write(.claude/**)",
+      "Write(config/**)",
+      "Edit(.env)",
+      "Edit(.claude/**)",
+      "Edit(config/**)",
+      "MultiEdit"
+    ]
+  }
+}
