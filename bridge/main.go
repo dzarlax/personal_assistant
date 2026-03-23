@@ -1,6 +1,15 @@
 // claude-bridge: HTTP service that wraps Claude Code CLI.
 // Runs on the host, accepts requests from the PA bot in Docker,
 // calls `claude -p` as a subprocess, returns the result.
+//
+// Configuration via environment variables:
+//
+//	CLAUDE_BRIDGE_LISTEN       — listen address (default 127.0.0.1:9900)
+//	CLAUDE_BRIDGE_TOKEN        — bearer auth token (required)
+//	CLAUDE_BRIDGE_PROJECT_DIR  — project directory for claude CLI (required)
+//	CLAUDE_BRIDGE_CLI          — path to claude binary (default "claude")
+//	CLAUDE_BRIDGE_TIMEOUT      — default timeout in seconds (default 120)
+//	CLAUDE_BRIDGE_CONCURRENCY  — max parallel CLI calls (default 2)
 package main
 
 import (
@@ -12,52 +21,27 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
-// --- Config ---
-
-type Config struct {
-	Listen        string `yaml:"listen"`
-	ProjectDir    string `yaml:"project_dir"`
-	CLIPath       string `yaml:"cli_path"`
-	DefaultTimeout int   `yaml:"default_timeout"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
-	AuthToken     string `yaml:"auth_token"`
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
-func loadConfig(path string) (Config, error) {
-	cfg := Config{
-		Listen:        "127.0.0.1:9900",
-		CLIPath:       "claude",
-		DefaultTimeout: 120,
-		MaxConcurrent: 2,
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, err
-	}
-	expanded := os.ExpandEnv(string(data))
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
-	}
-	if cfg.ProjectDir == "" {
-		return cfg, fmt.Errorf("project_dir is required")
-	}
-	if cfg.AuthToken == "" {
-		return cfg, fmt.Errorf("auth_token is required")
-	}
-	// Expand ~ in project_dir
-	if strings.HasPrefix(cfg.ProjectDir, "~/") {
-		home, _ := os.UserHomeDir()
-		cfg.ProjectDir = home + cfg.ProjectDir[1:]
-	}
-	return cfg, nil
+	return fallback
 }
 
 // --- Request / Response ---
@@ -65,7 +49,6 @@ func loadConfig(path string) (Config, error) {
 type AskRequest struct {
 	Prompt     string `json:"prompt"`
 	SessionID  string `json:"session_id,omitempty"`
-	MaxTokens  int    `json:"max_tokens,omitempty"`
 	TimeoutSec int    `json:"timeout_sec,omitempty"`
 }
 
@@ -77,30 +60,15 @@ type AskResponse struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// --- CLI output parsing ---
-
-type CLIResult struct {
-	Result   string `json:"result"`
-	Model    string `json:"model"`
-	Duration float64 `json:"duration_ms"`
-	// Claude CLI --output-format json fields
-	CostUSD float64 `json:"cost_usd"`
-}
-
 // --- Bridge ---
 
 type Bridge struct {
-	cfg    Config
-	sem    chan struct{}
-	logger *slog.Logger
-}
-
-func NewBridge(cfg Config, logger *slog.Logger) *Bridge {
-	return &Bridge{
-		cfg:    cfg,
-		sem:    make(chan struct{}, cfg.MaxConcurrent),
-		logger: logger,
-	}
+	projectDir     string
+	cliPath        string
+	authToken      string
+	defaultTimeout int
+	sem            chan struct{}
+	logger         *slog.Logger
 }
 
 func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) AskResponse {
@@ -111,30 +79,16 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 	case b.sem <- struct{}{}:
 		defer func() { <-b.sem }()
 	case <-time.After(10 * time.Second):
-		return AskResponse{
-			DurationMs: time.Since(start).Milliseconds(),
-			IsError:    true,
-			Error:      "queue_timeout",
-		}
+		return AskResponse{DurationMs: time.Since(start).Milliseconds(), IsError: true, Error: "queue_timeout"}
 	case <-ctx.Done():
-		return AskResponse{
-			DurationMs: time.Since(start).Milliseconds(),
-			IsError:    true,
-			Error:      "cancelled",
-		}
+		return AskResponse{DurationMs: time.Since(start).Milliseconds(), IsError: true, Error: "cancelled"}
 	}
 
-	timeout := time.Duration(timeoutSec) * time.Second
-	cliCtx, cancel := context.WithTimeout(ctx, timeout)
+	cliCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	args := []string{
-		"-p", prompt,
-		"--output-format", "json",
-	}
-
-	cmd := exec.CommandContext(cliCtx, b.cfg.CLIPath, args...)
-	cmd.Dir = b.cfg.ProjectDir // Claude Code picks up CLAUDE.md and .mcp.json from cwd
+	cmd := exec.CommandContext(cliCtx, b.cliPath, "-p", prompt, "--output-format", "json")
+	cmd.Dir = b.projectDir
 
 	b.logger.Info("calling CLI", "timeout", timeoutSec, "prompt_len", len(prompt))
 
@@ -145,14 +99,12 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 		if cliCtx.Err() == context.DeadlineExceeded {
 			return AskResponse{DurationMs: duration, IsError: true, Error: "timeout"}
 		}
-		// Try to get stderr for error details
 		errMsg := "cli_error"
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			stderr := strings.TrimSpace(string(exitErr.Stderr))
 			if stderr != "" {
 				errMsg = stderr
 			}
-			// Rate limit detection
 			if strings.Contains(stderr, "rate limit") || strings.Contains(stderr, "429") {
 				return AskResponse{DurationMs: duration, IsError: true, Error: "rate_limited"}
 			}
@@ -161,43 +113,21 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 		return AskResponse{DurationMs: duration, IsError: true, Error: errMsg}
 	}
 
-	// Try JSON parse first
-	var cliResult CLIResult
-	if err := json.Unmarshal(output, &cliResult); err == nil && cliResult.Result != "" {
-		return AskResponse{
-			Result:     cliResult.Result,
-			Model:      cliResult.Model,
-			DurationMs: duration,
-		}
+	// Try JSON parse
+	var parsed struct {
+		Result string `json:"result"`
+		Model  string `json:"model"`
+	}
+	if err := json.Unmarshal(output, &parsed); err == nil && parsed.Result != "" {
+		return AskResponse{Result: parsed.Result, Model: parsed.Model, DurationMs: duration}
 	}
 
-	// Fallback: raw text output
+	// Fallback: raw text
 	text := strings.TrimSpace(string(output))
 	if text == "" {
 		return AskResponse{DurationMs: duration, IsError: true, Error: "empty_response"}
 	}
 	return AskResponse{Result: text, DurationMs: duration}
-}
-
-func (b *Bridge) checkCLI() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, b.cfg.CLIPath, "--version")
-	return cmd.Run() == nil
-}
-
-// --- HTTP Handlers ---
-
-func (b *Bridge) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("Authorization")
-		expected := "Bearer " + b.cfg.AuthToken
-		if token != expected {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	}
 }
 
 func (b *Bridge) handleAsk(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +148,7 @@ func (b *Bridge) handleAsk(w http.ResponseWriter, r *http.Request) {
 
 	timeout := req.TimeoutSec
 	if timeout <= 0 {
-		timeout = b.cfg.DefaultTimeout
+		timeout = b.defaultTimeout
 	}
 
 	resp := b.callCLI(r.Context(), req.Prompt, timeout)
@@ -235,21 +165,27 @@ func (b *Bridge) handleAsk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	b.logger.Info("response",
-		"duration_ms", resp.DurationMs,
-		"is_error", resp.IsError,
-		"error", resp.Error,
-		"result_len", len(resp.Result),
-	)
-
+	b.logger.Info("response", "duration_ms", resp.DurationMs, "is_error", resp.IsError, "result_len", len(resp.Result))
 	writeJSON(w, status, resp)
 }
 
 func (b *Bridge) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if b.checkCLI() {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if exec.CommandContext(ctx, b.cliPath, "--version").Run() == nil {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	} else {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "cli_unavailable"})
+	}
+}
+
+func (b *Bridge) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+b.authToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -259,45 +195,51 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// --- Main ---
-
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	cfgPath := "bridge.yaml"
-	if len(os.Args) > 1 {
-		cfgPath = os.Args[1]
-	}
+	token := env("CLAUDE_BRIDGE_TOKEN", "")
+	projectDir := env("CLAUDE_BRIDGE_PROJECT_DIR", "")
 
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		logger.Error("failed to load config", "path", cfgPath, "err", err)
+	if token == "" || projectDir == "" {
+		fmt.Fprintln(os.Stderr, "Required env: CLAUDE_BRIDGE_TOKEN, CLAUDE_BRIDGE_PROJECT_DIR")
 		os.Exit(1)
 	}
 
-	if !fileExists(cfg.ProjectDir) {
-		logger.Error("project_dir does not exist", "path", cfg.ProjectDir)
+	// Expand ~
+	if strings.HasPrefix(projectDir, "~/") {
+		home, _ := os.UserHomeDir()
+		projectDir = home + projectDir[1:]
+	}
+
+	if _, err := os.Stat(projectDir); err != nil {
+		logger.Error("project dir not found", "path", projectDir)
 		os.Exit(1)
 	}
 
-	bridge := NewBridge(cfg, logger)
+	listen := env("CLAUDE_BRIDGE_LISTEN", "127.0.0.1:9900")
+	defaultTimeout := envInt("CLAUDE_BRIDGE_TIMEOUT", 120)
 
-	if !bridge.checkCLI() {
-		logger.Warn("Claude CLI not found or not responding", "path", cfg.CLIPath)
+	bridge := &Bridge{
+		projectDir:     projectDir,
+		cliPath:        env("CLAUDE_BRIDGE_CLI", "claude"),
+		authToken:      token,
+		defaultTimeout: defaultTimeout,
+		sem:            make(chan struct{}, envInt("CLAUDE_BRIDGE_CONCURRENCY", 2)),
+		logger:         logger,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ask", bridge.authMiddleware(bridge.handleAsk))
+	mux.HandleFunc("/ask", bridge.auth(bridge.handleAsk))
 	mux.HandleFunc("/health", bridge.handleHealth)
 
 	srv := &http.Server{
-		Addr:         cfg.Listen,
+		Addr:         listen,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: time.Duration(cfg.DefaultTimeout+30) * time.Second,
+		WriteTimeout: time.Duration(defaultTimeout+30) * time.Second,
 	}
 
-	// Graceful shutdown
 	var wg sync.WaitGroup
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -307,25 +249,16 @@ func main() {
 		defer wg.Done()
 		<-ctx.Done()
 		logger.Info("shutting down")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		shutCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+		defer c()
 		srv.Shutdown(shutCtx)
 	}()
 
-	logger.Info("claude-bridge starting",
-		"listen", cfg.Listen,
-		"project_dir", cfg.ProjectDir,
-		"max_concurrent", cfg.MaxConcurrent,
-	)
+	logger.Info("claude-bridge starting", "listen", listen, "project_dir", projectDir)
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		logger.Error("server error", "err", err)
 		os.Exit(1)
 	}
 	wg.Wait()
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

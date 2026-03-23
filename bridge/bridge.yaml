@@ -1,6 +1,0 @@
-listen: "127.0.0.1:9900"
-project_dir: "${ASSISTANT_CONTEXT_DIR}"
-cli_path: "claude"
-default_timeout: 120
-max_concurrent: 2
-auth_token: "${CLAUDE_BRIDGE_TOKEN}"
