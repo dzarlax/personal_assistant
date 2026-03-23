@@ -123,20 +123,32 @@ func main() {
 		}
 	}
 
-	// Init store (SQLite if data dir exists, otherwise memory)
+	// Init store: PostgreSQL (DATABASE_URL) → SQLite fallback → memory fallback
 	var s store.Store
-	dataDir := "data"
-	if err := os.MkdirAll(dataDir, 0755); err == nil {
-		sqlite, err := store.NewSQLite(filepath.Join(dataDir, "conversations.db"))
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		pg, err := store.NewPostgres(context.Background(), dbURL)
 		if err != nil {
-			logger.Warn("failed to init SQLite, using memory store", "err", err)
-			s = store.NewMemory()
+			logger.Error("failed to init PostgreSQL, falling back to SQLite", "err", err)
 		} else {
-			logger.Info("using SQLite store")
-			s = sqlite
+			logger.Info("using PostgreSQL store")
+			s = pg
+			defer pg.Close()
 		}
-	} else {
-		s = store.NewMemory()
+	}
+	if s == nil {
+		dataDir := "data"
+		if err := os.MkdirAll(dataDir, 0755); err == nil {
+			sqlite, err := store.NewSQLite(filepath.Join(dataDir, "conversations.db"))
+			if err != nil {
+				logger.Warn("failed to init SQLite, using memory store", "err", err)
+				s = store.NewMemory()
+			} else {
+				logger.Info("using SQLite store")
+				s = sqlite
+			}
+		} else {
+			s = store.NewMemory()
+		}
 	}
 
 	// Persist routing overrides across restarts
