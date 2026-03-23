@@ -19,5 +19,3 @@ docs
 openspec
 .claudignore
 config/routing.json
-
-channel/node_modules
