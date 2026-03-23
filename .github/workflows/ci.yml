@@ -34,6 +34,40 @@ jobs:
       - name: Vet
         run: CGO_ENABLED=0 go vet ./...
 
+  bridge:
+    name: Build Claude Bridge
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build bridge
+        run: |
+          cd bridge
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -ldflags="-s -w" -o claude-bridge-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-bridge-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bridge/claude-bridge-${{ matrix.goos }}-${{ matrix.goarch }}
+
   docker:
     name: Docker Build & Push
     needs: build
@@ -73,3 +107,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release-bridge:
+    name: Release Bridge Binaries
+    needs: bridge
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: claude-bridge-*
+          merge-multiple: true
+
+      - name: Update rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          prerelease: true
+          files: claude-bridge-*
+          body: |
+            Auto-built from `main` branch.
+
+            Download the bridge binary for your platform:
+            - `claude-bridge-linux-amd64` — Linux x86_64 (VPS, servers)
+            - `claude-bridge-linux-arm64` — Linux ARM64 (Raspberry Pi, ARM servers)
+            - `claude-bridge-darwin-arm64` — macOS Apple Silicon
