@@ -29,9 +29,11 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 - Go 1.24+ (or Docker)
 - [Telegram Bot Token](https://t.me/BotFather)
-- At least one LLM API key (DeepSeek, Gemini, Qwen, or Ollama Cloud)
+- At least one LLM API key (DeepSeek, Gemini, or Ollama Cloud)
 
 ## Quick start
+
+### Development (with source)
 
 ```bash
 git clone https://github.com/dzarlax/personal_assistant.git
@@ -48,55 +50,66 @@ make docker-up
 make logs
 ```
 
+### Production server (no source code)
+
+```bash
+mkdir -p ~/personal_assistant/{config,data,bridge}
+cd ~/personal_assistant
+
+# Download docker-compose and example configs
+REPO="https://raw.githubusercontent.com/dzarlax/personal_assistant/main"
+curl -sLO "$REPO/docker-compose.yml"
+curl -sL "$REPO/.env.example" -o .env
+curl -sL "$REPO/config/config.yaml.example" -o config/config.yaml
+curl -sL "$REPO/config/mcp.json.example" -o config/mcp.json
+curl -sL "$REPO/config/system_prompt.md.example" -o config/system_prompt.md
+curl -sL "$REPO/bridge/update.sh" -o bridge/update.sh && chmod +x bridge/update.sh
+
+# Fill in your API keys and Telegram token
+nano .env
+nano config/config.yaml
+
+# Start
+docker compose up -d
+```
+
 **Get your Telegram chat ID:** send `/start` to [@userinfobot](https://t.me/userinfobot).
 
 ### With Claude Bridge (optional)
 
-Use Claude (Anthropic Max/Pro subscription) as an LLM provider via a host-side bridge service.
+Use Claude (Anthropic Max/Pro subscription) as an LLM provider via a host-side bridge service. Activated on demand via `/claude` command in the bot.
 
-**Prerequisites:** [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in on the host (`npm install -g @anthropic-ai/claude-code && claude`).
+**Prerequisites:** [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in on the host.
 
 ```bash
 # 1. Run setup (creates context dir, builds/downloads bridge, generates token)
 ./scripts/setup.sh --with-claude /path/to/assistant_context
 
 # 2. Edit .env — fill in API keys, verify CLAUDE_BRIDGE_TOKEN and PROJECT_DIR.
-#    IMPORTANT: add this line (Docker can't reach 127.0.0.1 on the host):
-#    CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900
 nano .env
 
 # 3. Edit config/mcp.json — add your MCP servers with "type": "http" field.
-#    This is required for Claude Code to recognize HTTP-based MCP servers.
-#    Example:
-#    { "mcpServers": { "my-server": { "type": "http", "url": "https://...", "headers": {...} } } }
-#    The bot ignores the "type" field; Claude Code requires it.
+#    Required for Claude Code to recognize HTTP-based MCP servers.
 nano config/mcp.json
 
-# 4. Start bridge (exports env vars and runs in background)
-export $(grep -v '^#' .env | xargs); ./bridge/claude-bridge &
+# 4. Install systemd service (production)
+sudo cp bridge/claude-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-bridge
 
 # 5. Start bot
 make docker-up
 ```
 
-**Note:** `source .env` does not export variables to subprocesses. Use `export $(grep -v '^#' .env | xargs)` instead.
+#### Updating the bridge
 
-For production, run the bridge as a systemd service:
-```ini
-# /etc/systemd/system/claude-bridge.service
-[Unit]
-Description=Claude Bridge
-After=network.target
+A pre-built binary is published to GitHub Releases on every push to `main` that changes `bridge/`. To update:
 
-[Service]
-ExecStart=/path/to/bridge/claude-bridge
-EnvironmentFile=/path/to/.env
-Environment=CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+```bash
+./bridge/update.sh
 ```
+
+This downloads the latest binary and restarts the systemd service.
 
 ## Running
 
@@ -155,15 +168,9 @@ models:
     api_key: ${DEEPSEEK_API_KEY}
     max_tokens: 8192
     base_url: https://api.deepseek.com
-  gemini-flash-lite:
-    provider: gemini
-    model: gemini-2.0-flash-lite
-    api_key: ${GEMINI_API_KEY}
-    max_tokens: 2048
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
   gemini-flash:
     provider: gemini
-    model: gemini-2.0-flash
+    model: gemini-3-flash-preview
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
@@ -186,32 +193,13 @@ models:
   #   model: text-embedding-3-small
   #   api_key: ${OPENAI_API_KEY}
 
-  qwen-flash:             # optional — used as classifier by default
-    provider: qwen
-    model: qwen3.5-flash
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 4096
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen3.5-plus:           # optional
-    provider: qwen
-    model: qwen3.5-122b-a10b
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 4096
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen-max:               # optional
-    provider: qwen
-    model: qwen3-max
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 8192
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-
   # Ollama Cloud or local Ollama (native /api/chat protocol)
   # ollama:
   #   model: qwen3.5:32b          # any model from ollama.com/search?c=cloud
   #   api_key: ${OLLAMA_API_KEY}  # required for cloud; optional for local
   #   base_url: https://ollama.com # default; http://localhost:11434 for local
 
-  # Claude via bridge (requires claude-bridge running on host)
+  # Claude via bridge (requires claude-bridge running on host — see Claude Bridge section)
   # claude:
   #   base_url: http://host.docker.internal:9900
   #   api_key: ${CLAUDE_BRIDGE_TOKEN}
@@ -219,10 +207,10 @@ models:
 
 routing:
   default: deepseek          # primary model — can be any configured model name
-  fallback: gemini-flash-lite
+  fallback: gemini-flash     # also used for multimodal
   multimodal: gemini-flash
-  reasoner: deepseek-r1      # set to "claude" to route complex queries via bridge
-  classifier: qwen-flash     # model for reasoning detection; omit to disable
+  reasoner: deepseek-r1
+  classifier: deepseek       # model for reasoning detection; omit to disable
   classifier_min_length: 100 # min chars to run classifier; 0 = disabled
   compaction_model: deepseek
 
@@ -274,6 +262,8 @@ Plain text or Markdown injected as system prompt on every request.
 | `/model list` | List all available models |
 | `/model <name>` | Switch to a specific model for the session (e.g. `/model deepseek-r1`) |
 | `/model reset` | Back to auto-routing |
+| `/claude <question>` | Enter Claude mode — sends question via Claude Bridge |
+| `/exit` | Exit Claude mode, back to auto-routing |
 | `/routing` | Configure routing roles permanently via inline keyboard |
 | `/tools` | List connected MCP tools grouped by server |
 | `/help` | Show help |
@@ -289,7 +279,7 @@ Plain text or Markdown injected as system prompt on every request.
 | 3 | `primary` | Default for all other messages |
 | 4 | `fallback` | Primary unavailable (5xx / 429 / network error) |
 
-The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable.
+The classifier is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable.
 
 All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
 
@@ -328,34 +318,88 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 
 ## Claude Bridge (optional)
 
-Use Claude from your Anthropic Max/Pro subscription as an LLM provider — no separate API key needed. A lightweight Go service runs on the host and wraps `claude -p` CLI.
+Use Claude from your Anthropic Max/Pro subscription as an LLM provider — no separate API key needed. A lightweight Go service runs on the host and wraps `claude -p` CLI. Activated on demand via `/claude` command.
 
 ```
-Telegram → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
+/claude <question> → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
 ```
-
-Setup is handled by `./scripts/setup.sh --with-claude /path/to/assistant_context` — see [Quick start](#quick-start). The script creates the context directory, builds the bridge binary, generates a shared auth token, and updates `.env`.
 
 ### How it works
 
-- Bridge runs on the **host** (not in Docker) — it needs access to `claude` CLI
+- Bridge runs on the **host** (not in Docker) as a systemd service — it needs access to `claude` CLI
 - Bot in Docker reaches the bridge via `host.docker.internal:9900`
-- Bridge must listen on `0.0.0.0:9900` (not `127.0.0.1`) so Docker can connect
+- Bridge listens on the Docker bridge network (`172.17.0.1:9900`) — not exposed externally
 - Each request: bot formats conversation history into a single text prompt → `claude -p` → response
-- Claude CLI reads `CLAUDE.md` and `.mcp.json` from `assistant_context/` (project context directory)
-- `.mcp.json` is a symlink to `config/mcp.json` — same MCP servers shared between bot and Claude CLI
+- Claude CLI reads `CLAUDE.md` and `.mcp.json` from the project context directory
 - MCP servers in `config/mcp.json` must have `"type": "http"` for Claude Code compatibility (bot ignores this field)
-- Claude CLI also has access to its own global MCP servers from `~/.claude.json`
+
+### Server setup
+
+No source code on the server — only the binary, config, and docker-compose:
+
+```
+~/personal_assistant/
+├── .env                      # secrets
+├── docker-compose.yml        # bot (Docker)
+├── bridge/
+│   ├── claude-bridge         # binary (managed by systemd)
+│   └── update.sh             # update script
+├── config/
+│   ├── config.yaml           # models and routing
+│   ├── routing.json          # runtime routing overrides
+│   ├── mcp.json              # MCP servers
+│   └── system_prompt.md      # system prompt
+└── data/
+    └── routing.json          # runtime state
+```
+
+#### systemd service
+
+```ini
+# /etc/systemd/system/claude-bridge.service
+[Unit]
+Description=Claude Bridge - HTTP wrapper for Claude Code CLI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/root/personal_assistant/bridge/claude-bridge
+Environment=CLAUDE_BRIDGE_TOKEN=<your-token>
+Environment=CLAUDE_BRIDGE_PROJECT_DIR=/root/vol/assistant_context
+Environment=CLAUDE_BRIDGE_LISTEN=172.17.0.1:9900
+Environment=CLAUDE_BRIDGE_CLI=/root/.local/bin/claude
+Environment=CLAUDE_BRIDGE_CONCURRENCY=1
+Environment=CLAUDE_BRIDGE_TIMEOUT=120
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-bridge
+```
+
+#### Updating the bridge binary
+
+```bash
+~/personal_assistant/bridge/update.sh
+```
+
+Downloads the latest binary from GitHub Releases and restarts the service.
 
 ### Key env vars
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CLAUDE_BRIDGE_TOKEN` | Yes | — | Shared secret (Bearer auth) |
-| `CLAUDE_BRIDGE_PROJECT_DIR` | Yes | — | Path to `assistant_context/` |
-| `CLAUDE_BRIDGE_LISTEN` | No | `127.0.0.1:9900` | **Set to `0.0.0.0:9900` for Docker access** |
+| `CLAUDE_BRIDGE_PROJECT_DIR` | Yes | — | Path to project context directory |
+| `CLAUDE_BRIDGE_LISTEN` | No | `127.0.0.1:9900` | Set to `172.17.0.1:9900` for Docker access |
 | `CLAUDE_BRIDGE_TIMEOUT` | No | `120` | Default CLI timeout in seconds |
-| `CLAUDE_BRIDGE_CONCURRENCY` | No | `2` | Max parallel CLI calls |
+| `CLAUDE_BRIDGE_CONCURRENCY` | No | `1` | Max parallel CLI calls |
 | `CLAUDE_BRIDGE_CLI` | No | `claude` | Path to CLI binary |
 
 ### Limitations
@@ -364,7 +408,6 @@ Setup is handled by `./scripts/setup.sh --with-claude /path/to/assistant_context
 - No streaming — user waits for full response
 - No images — multimodal queries routed to Gemini
 - Stateless — conversation history formatted into prompt by the bot
-- Claude Code Channels API does not work with Team plans
 
 ## Companion MCP Servers
 
@@ -401,9 +444,7 @@ flowchart TD
     subgraph LLMs ["LLM Providers"]
         DS["deepseek"]
         DSR["deepseek-r1"]
-        GL["gemini-flash-lite"]
         GM["gemini-flash"]
-        QW["qwen-* (optional)"]
         OL["ollama (optional)"]
         CB["claude (via bridge)"]
     end
@@ -441,9 +482,7 @@ flowchart TD
     MCP <-->|"tools/call"| Servers
     Router --> DS
     Router --> DSR
-    Router --> GL
     Router --> GM
-    Router --> QW
     Router --> OL
     Router --> CB
     CB -->|"POST /ask"| Bridge
