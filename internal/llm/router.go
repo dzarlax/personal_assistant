@@ -177,15 +177,26 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
 	if err != nil && isUnavailable(err) {
+		// Build fallback chain: override → default → fallback.
+		// Skip providers already tried or equal to current.
 		r.mu.RLock()
-		fallbackKey := r.cfg.Fallback
+		chain := []string{r.cfg.Primary, r.cfg.Fallback}
 		r.mu.RUnlock()
-		if fallback := r.get(fallbackKey); fallback != nil && fallback != provider {
-			slog.Info("routing", "reason", "fallback", "from", provider.Name(), "to", fallback.Name(), "err", err.Error())
-			if r.OnFallback != nil {
-				r.OnFallback(provider.Name(), fallback.Name())
+
+		for _, key := range chain {
+			next := r.get(key)
+			if next == nil || next == provider {
+				continue
 			}
-			resp, err = fallback.Chat(ctx, messages, systemPrompt, tools)
+			slog.Info("routing", "reason", "fallback", "from", provider.Name(), "to", next.Name(), "err", err.Error())
+			if r.OnFallback != nil {
+				r.OnFallback(provider.Name(), next.Name())
+			}
+			resp, err = next.Chat(ctx, messages, systemPrompt, tools)
+			if err == nil || !isUnavailable(err) {
+				break
+			}
+			provider = next // track last tried for next iteration
 		}
 	}
 	return resp, err
