@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"telegram-agent/internal/config"
@@ -20,6 +21,8 @@ type claudeBridgeProvider struct {
 	authToken string
 	timeout   time.Duration
 	client    *http.Client
+
+	mu        sync.Mutex
 	sessionID string // set after first call; enables --resume for session continuity
 }
 
@@ -48,12 +51,18 @@ func (p *claudeBridgeProvider) Name() string { return "claude-bridge" }
 
 // ResetSession clears the stored session ID so the next call starts a fresh Claude session.
 func (p *claudeBridgeProvider) ResetSession() {
+	p.mu.Lock()
 	p.sessionID = ""
+	p.mu.Unlock()
 }
 
 func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
+	p.mu.Lock()
+	sid := p.sessionID
+	p.mu.Unlock()
+
 	var prompt string
-	if p.sessionID != "" {
+	if sid != "" {
 		// Continuing a session — only send the latest user message.
 		// Claude CLI resumes the session and already has prior context.
 		for i := len(messages) - 1; i >= 0; i-- {
@@ -64,15 +73,19 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 		}
 	} else {
 		// First call — send full history so Claude has context.
+		// Cap at 30K chars to avoid bloating the CLI prompt.
 		prompt = buildPrompt(messages, systemPrompt)
+		if len(prompt) > 30000 {
+			prompt = prompt[len(prompt)-30000:]
+		}
 	}
 
 	body := map[string]any{
 		"prompt":      prompt,
 		"timeout_sec": int(p.timeout.Seconds()),
 	}
-	if p.sessionID != "" {
-		body["session_id"] = p.sessionID
+	if sid != "" {
+		body["session_id"] = sid
 	}
 	reqBody, _ := json.Marshal(body)
 
@@ -105,10 +118,10 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 	}
 
 	if bridgeResp.IsError {
-		// If resume failed, reset session and let the caller retry.
-		if p.sessionID != "" {
-			p.sessionID = ""
-		}
+		// If resume failed, reset session so next call starts fresh.
+		p.mu.Lock()
+		p.sessionID = ""
+		p.mu.Unlock()
 		statusCode := resp.StatusCode
 		if statusCode == 200 {
 			statusCode = 500
@@ -118,7 +131,9 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 
 	// Store session ID for subsequent calls (enables --resume).
 	if bridgeResp.SessionID != "" {
+		p.mu.Lock()
 		p.sessionID = bridgeResp.SessionID
+		p.mu.Unlock()
 	}
 
 	return Response{Content: bridgeResp.Result}, nil
