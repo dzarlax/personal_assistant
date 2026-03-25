@@ -17,7 +17,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
 - **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering; vector similarity filtering selects only the most relevant tools per request
 - **Configurable embeddings** — shared embedding layer used for both tool filtering and conversation memory; supports Gemini (default), HuggingFace TEI, or any OpenAI-compatible endpoint
-- **Persistent memory** — SQLite-backed conversation history with automatic session management
+- **Persistent memory** — PostgreSQL-backed conversation history with automatic session management (SQLite fallback for local dev)
 - **Token-based compaction** — auto-summarises old history when estimated token count exceeds threshold; images count as 1000 tokens each
 - **Smart token usage** — classifier input truncated to 500 chars; large tool results (>2 KB) auto-summarised before entering history; response cache with cosine ≥ 0.92 threshold and 4-hour TTL
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
@@ -119,7 +119,7 @@ make docker-up    # Docker (copies missing example configs, starts)
 make logs         # follow Docker logs
 ```
 
-Data is stored in `./data/conversations.db` (mounted as a volume in Docker).
+Data is stored in PostgreSQL (set `DATABASE_URL` in `.env`). Falls back to `./data/conversations.db` (SQLite) if no database URL is configured.
 
 ## Project layout
 
@@ -132,7 +132,7 @@ config/
   mcp.json             # MCP servers — not in git
   mcp.json.example     # template
   routing.json         # runtime routing overrides — auto-created
-data/                  # SQLite DB — not in git
+data/                  # SQLite fallback DB — not in git
 bridge/                # claude-bridge host service (optional)
   main.go              # HTTP → claude -p wrapper (config via env vars)
 scripts/
@@ -288,7 +288,7 @@ All routing roles can be changed live via `/routing` — an inline keyboard menu
 When an embedding model is configured, the bot gains two levels of long-term memory beyond the current session:
 
 ### Within-session RAG
-User messages are embedded and stored in SQLite. Instead of always taking the last 30 messages, the context window is built as:
+User messages are embedded and stored in the database. Instead of always taking the last 30 messages, the context window is built as:
 - **Last 10 messages** — always included (recent context)
 - **Up to 20 older turns** — selected by cosine similarity to the current query
 
@@ -310,7 +310,7 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 
 ## Session Management
 
-- History persists across restarts (SQLite)
+- History persists across restarts (PostgreSQL; SQLite fallback)
 - After **4 hours of inactivity**, a new session starts automatically — the last summary is carried over
 - `/clear` does a full reset with no carry-over
 - Compaction triggers when estimated token count exceeds **16 000 tokens** (images count as 1000 tokens each)
@@ -430,7 +430,7 @@ flowchart TD
     Agent["Agent\nagentic loop · response cache"]
     Router["LLM Router\n(primary · fallback · reasoner\nmultimodal · classifier)"]
     MCP["MCP Client"]
-    Store[("SQLite\nconversations.db")]
+    Store[("PostgreSQL\n(SQLite fallback)")]
     Emb["Embedding Model\n(Gemini / HF-TEI / OpenAI)"]
 
     subgraph Memory ["Semantic Memory"]
