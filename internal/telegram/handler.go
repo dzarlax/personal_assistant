@@ -934,14 +934,23 @@ func (h *Handler) sendVoiceReply(chatID int64, text string) {
 
 	h.logger.Info("TTS synthesized", "chat_id", chatID, "audio_bytes", len(audio), "text_len", len(plain))
 
-	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
-		Name:  "response.mp3",
-		Bytes: audio,
-	})
+	file := tgbotapi.FileBytes{Name: "response.mp3", Bytes: audio}
+
+	// Try voice message first; fall back to audio document if forbidden.
+	voice := tgbotapi.NewVoice(chatID, file)
 	if _, err := h.bot.Send(voice); err != nil {
-		h.logger.Warn("failed to send voice message", "err", err, "chat_id", chatID)
+		if strings.Contains(err.Error(), "VOICE_MESSAGES_FORBIDDEN") {
+			audio := tgbotapi.NewAudio(chatID, file)
+			if _, err2 := h.bot.Send(audio); err2 != nil {
+				h.logger.Warn("failed to send audio file", "err", err2, "chat_id", chatID)
+			} else {
+				h.logger.Info("audio reply sent", "chat_id", chatID, "mode", "audio")
+			}
+		} else {
+			h.logger.Warn("failed to send voice message", "err", err, "chat_id", chatID)
+		}
 	} else {
-		h.logger.Info("voice reply sent", "chat_id", chatID)
+		h.logger.Info("voice reply sent", "chat_id", chatID, "mode", "voice")
 	}
 }
 
