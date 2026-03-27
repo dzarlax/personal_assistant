@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	maxBodySize    = 256 * 1024 // 256 KB — ~4 sec at 16kHz 16bit mono
+	maxBodySize    = 640 * 1024 // 640 KB — ~10 sec at 16kHz 16bit mono + margin
 	requestTimeout = 60 * time.Second
 )
 
@@ -52,8 +52,8 @@ func New(ag *agent.Agent, cfg config.VoiceAPIConfig, logger *slog.Logger) *Serve
 	s.srv = &http.Server{
 		Addr:         listen,
 		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: requestTimeout + 10*time.Second,
+		ReadTimeout:  0, // no read timeout — clients stream audio over seconds
+		WriteTimeout: requestTimeout + 30*time.Second,
 	}
 	return s
 }

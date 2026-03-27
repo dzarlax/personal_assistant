@@ -108,7 +108,6 @@ void VoiceClient::streaming_task_() {
   esp_http_client_set_header(client, "Content-Type", "audio/wav");
   esp_http_client_set_header(client, "Authorization", auth_header.c_str());
   esp_http_client_set_header(client, "Accept", "audio/wav");
-  esp_http_client_set_header(client, "Transfer-Encoding", "chunked");
 
   // Open connection without specifying content length (-1 = chunked).
   esp_err_t err = esp_http_client_open(client, -1);
