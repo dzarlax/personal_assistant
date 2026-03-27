@@ -98,22 +98,28 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
-	// Read audio body.
+	// Read audio body — supports both chunked and regular transfer.
 	s.logger.Info("reading body", "content_length", r.ContentLength, "transfer_encoding", r.TransferEncoding)
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
-	if err != nil {
-		s.logger.Error("failed to read body", "err", err)
-		writeError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
-		return
-	}
-	if len(body) > maxBodySize {
-		writeError(w, http.StatusRequestEntityTooLarge, "audio too large (max 256 KB)")
-		return
+	var body []byte
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := r.Body.Read(buf)
+		if n > 0 {
+			body = append(body, buf[:n]...)
+			if len(body) > maxBodySize {
+				writeError(w, http.StatusRequestEntityTooLarge, "audio too large")
+				return
+			}
+		}
+		if readErr != nil {
+			break // EOF or error — either way we have what we got
+		}
 	}
 	if len(body) == 0 {
 		writeError(w, http.StatusBadRequest, "empty body")
 		return
 	}
+	s.logger.Info("body read complete", "size", len(body))
 
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
