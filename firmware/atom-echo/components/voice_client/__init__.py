@@ -31,6 +31,9 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
+    from esphome.components.esp32 import add_idf_component
+    add_idf_component(name="espressif/esp_websocket_client", ref="1.2.3")
+
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 

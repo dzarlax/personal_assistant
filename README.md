@@ -7,7 +7,9 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner
 - **Claude via bridge** — use Claude (Anthropic Max subscription) as a provider through a lightweight host-side bridge service that wraps `claude -p` CLI; no separate API key needed
 - **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
-- **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline
+- **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline; replies include both text and a voice message via Edge TTS
+- **Voice API + Atom Echo** — HTTP and WebSocket voice API for hardware voice assistants; ships with ESPHome firmware for M5Stack Atom Echo (push-to-talk, LED feedback, streaming audio over WebSocket)
+- **Text-to-speech** — Edge TTS (Microsoft) integration: no API key, high quality Russian/English voices, MP3 output for Telegram, WAV for hardware devices
 - **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
 - **Filesystem tools** — built-in `list_files`, `read_file`, `write_file`, `append_file`, `delete_file`, `search_files` scoped to a configurable directory; path traversal protection; great for personal notes, reference materials, and shared context with Claude Bridge
 - **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
@@ -136,6 +138,11 @@ config/
 data/                  # SQLite fallback DB — not in git
 bridge/                # claude-bridge host service (optional)
   main.go              # HTTP → claude -p wrapper (config via env vars)
+firmware/
+  atom-echo/           # ESPHome firmware for M5Stack Atom Echo
+    atom-echo.yaml     # ESPHome config
+    secrets.yaml       # WiFi + API token — not in git
+    components/        # custom voice_client ESPHome component
 scripts/
   init-context.sh      # creates assistant_context directory
 templates/
@@ -278,6 +285,64 @@ All paths are relative to the root directory. Path traversal (`../`) is blocked.
 volumes:
   - /path/to/context:/assistant_context:rw
 ```
+
+### `tts`
+
+Text-to-speech via Edge TTS (Microsoft). No API key required. Used for Telegram voice replies and Atom Echo responses.
+
+```yaml
+tts:
+  enabled: true
+  voice: ru-RU-DmitryNeural  # also: en-US-EmmaMultilingualNeural, uk-UA-OstapNeural
+  # rate: "+0%"    # speech speed adjustment
+  # pitch: "+0Hz"  # pitch adjustment
+```
+
+When enabled: voice messages in Telegram get a voice reply alongside text. The Voice API uses TTS for all responses.
+
+### `voice_api`
+
+HTTP + WebSocket voice API for hardware voice assistants (Atom Echo, etc).
+
+```yaml
+voice_api:
+  enabled: true
+  listen: ":8086"
+  token: ${VOICE_API_TOKEN}    # Bearer auth
+  chat_id: 9999                # separate conversation history from Telegram
+```
+
+**Endpoints:**
+- `POST /voice` — send WAV audio, receive MP3 or WAV response (set `Accept: audio/wav` for hardware devices)
+- `GET /voice/ws?token=<token>` — WebSocket for streaming: send binary PCM frames, receive binary WAV frames
+- `GET /voice/health` — health check
+
+**WebSocket protocol:**
+1. Client connects to `/voice/ws?token=<token>`
+2. Client sends binary frames with raw PCM audio (16kHz 16bit mono)
+3. Client sends text frame `{"action":"stop"}` to end recording
+4. Server sends text frame `{"status":"processing","transcription":"..."}` after STT
+5. Server sends binary frames with WAV audio response
+6. Server sends text frame `{"status":"done","response":"..."}` when complete
+
+Exposed via Traefik at `voice.dzarlax.dev`.
+
+### Atom Echo Firmware
+
+ESPHome firmware for M5Stack Atom Echo in `firmware/atom-echo/`:
+
+```bash
+cd firmware/atom-echo
+cp secrets.yaml.example secrets.yaml  # fill in WiFi + API token
+esphome run atom-echo.yaml            # compile + flash via USB
+```
+
+**Features:**
+- Push-to-talk button → stream audio via WebSocket → play response
+- LED feedback: blue (idle) → orange (connecting) → red (recording) → yellow pulse (processing) → green (playing)
+- 16kHz 16bit mono mic with 4x gain
+- Streaming playback (no buffer limit for responses)
+- Up to 10s recording via WebSocket streaming
 
 ## Bot Commands
 
@@ -461,6 +526,9 @@ Configure them in `config/mcp.json`.
 ```mermaid
 flowchart TD
     User(["📱 Telegram"])
+    Echo(["🔊 Atom Echo"])
+    VoiceAPI["Voice API\n(HTTP + WebSocket)\n:8086"]
+    TTS["Edge TTS\n(Microsoft)"]
     Handler["Telegram Handler\n(debounce · reply chain · batch)"]
     FwdBuf["Forward Buffer\n(embed · relevance filter)"]
     Agent["Agent\nagentic loop · response cache"]
@@ -498,6 +566,10 @@ flowchart TD
         S3["..."]
     end
 
+    Echo -->|"WSS audio stream"| VoiceAPI
+    VoiceAPI -->|"STT + Process + TTS"| Agent
+    VoiceAPI <-->|"MP3 → WAV"| TTS
+    Handler <-->|"voice reply"| TTS
     User -->|"text / photo / voice / reply"| Handler
     User -->|"forwarded messages"| FwdBuf
     FwdBuf <-->|"embed forwards"| Emb

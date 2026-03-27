@@ -1,6 +1,6 @@
 services:
   agent:
-    image: dzarlax/personal-assistant:latest
+    image: ghcr.io/dzarlax/personal-assistant:latest
     # build: .   # uncomment to build locally instead
     restart: unless-stopped
     network_mode: bridge

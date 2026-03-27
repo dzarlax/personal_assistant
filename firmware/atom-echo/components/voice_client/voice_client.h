@@ -5,22 +5,22 @@
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/components/light/light_state.h"
 
-#include "esp_http_client.h"
+#include "esp_websocket_client.h"
 
 namespace esphome {
 namespace voice_client {
 
 enum class State : uint8_t {
   IDLE,
-  RECORDING,      // mic on, streaming audio via chunked HTTP
-  PROCESSING,     // HTTP request sent, waiting for response
+  CONNECTING,     // WebSocket connecting
+  RECORDING,      // mic on, streaming audio frames
+  PROCESSING,     // stop sent, waiting for response
   PLAYING,        // streaming response to speaker
   ERROR,
 };
 
 static const size_t WAV_HEADER_SIZE = 44;
-// Small ring buffer for mic callback → HTTP write handoff.
-static const size_t MIC_CHUNK_SIZE = 4096;
+static const size_t WS_AUDIO_CHUNK = 2048;  // bytes per WebSocket binary frame
 
 class VoiceClient : public Component {
  public:
@@ -42,9 +42,12 @@ class VoiceClient : public Component {
   void set_state_(State state);
   void set_led_color_(float r, float g, float b, float brightness = 0.8f);
   void set_led_pulse_();
-  void streaming_task_();
-  void play_response_(esp_http_client_handle_t client);
-  void build_wav_header_(uint8_t *buf, uint32_t sample_rate);
+
+  static void ws_event_handler_(void *arg, esp_event_base_t base, int32_t event_id, void *event_data);
+  void on_ws_connected_();
+  void on_ws_data_(uint8_t *data, int len, int opcode);
+  void on_ws_disconnected_();
+  void on_ws_error_();
 
   microphone::Microphone *mic_{nullptr};
   speaker::Speaker *spk_{nullptr};
@@ -55,16 +58,18 @@ class VoiceClient : public Component {
   int max_record_seconds_{10};
 
   State state_{State::IDLE};
+  esp_websocket_client_handle_t ws_client_{nullptr};
 
-  // Ring buffer for mic→HTTP streaming.
-  uint8_t mic_buf_[MIC_CHUNK_SIZE];
-  volatile size_t mic_buf_pos_{0};
-  volatile bool mic_buf_ready_{false};  // chunk ready to send
+  // Mic data buffer for sending — double buffer to avoid blocking callback.
+  uint8_t mic_send_buf_[WS_AUDIO_CHUNK];
+  volatile size_t mic_send_pos_{0};
+  volatile bool mic_send_ready_{false};
 
   uint32_t record_start_{0};
-  volatile bool stop_requested_{false};
-  bool should_start_stream_{false};
-  size_t total_bytes_sent_{0};
+  bool speaker_started_{false};
+  bool wav_header_skipped_{false};
+  size_t total_audio_received_{0};
+  volatile bool should_disconnect_{false};
 };
 
 }  // namespace voice_client

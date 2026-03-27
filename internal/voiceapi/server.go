@@ -12,12 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/hajimehoshi/go-mp3"
 
 	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
 )
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 const (
 	maxBodySize    = 640 * 1024 // 640 KB — ~10 sec at 16kHz 16bit mono + margin
@@ -42,6 +47,7 @@ func New(ag *agent.Agent, cfg config.VoiceAPIConfig, logger *slog.Logger) *Serve
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/voice", s.auth(s.handleVoice))
+	mux.HandleFunc("/voice/ws", s.authWS(s.handleWebSocket))
 	mux.HandleFunc("/voice/health", s.handleHealth)
 
 	listen := cfg.Listen
@@ -82,6 +88,22 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") || auth[7:] != s.cfg.Token {
 			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// authWS checks token from query parameter (WebSocket can't send custom headers in ESP-IDF).
+func (s *Server) authWS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Token == "" {
+			next(w, r)
+			return
+		}
+		token := r.URL.Query().Get("token")
+		if token != s.cfg.Token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
@@ -196,6 +218,147 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 	w.Write(audio)
 
 	s.logger.Info("voice reply sent", "audio_bytes", len(audio), "format", respContentType)
+}
+
+// handleWebSocket handles streaming voice interaction over WebSocket.
+// Protocol:
+//   Client → Server: binary frames with raw PCM audio (16kHz 16bit mono, no WAV header)
+//   Client → Server: text frame {"action":"stop"} signals end of recording
+//   Server → Client: text frame {"status":"processing","transcription":"..."} after STT
+//   Server → Client: binary frames with WAV audio response (streamed)
+//   Server → Client: text frame {"status":"done","response":"..."} when complete
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		s.logger.Error("websocket upgrade failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	s.logger.Info("websocket connected", "remote", r.RemoteAddr)
+
+	// Phase 1: Receive audio frames until "stop" signal.
+	var audioData []byte
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second)) // max recording time
+
+	for {
+		msgType, data, readErr := conn.ReadMessage()
+		if readErr != nil {
+			s.logger.Warn("websocket read error", "err", readErr)
+			break
+		}
+
+		if msgType == websocket.TextMessage {
+			var msg struct {
+				Action string `json:"action"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.Action == "stop" {
+				s.logger.Info("recording stop received", "audio_bytes", len(audioData))
+				break
+			}
+		} else if msgType == websocket.BinaryMessage {
+			audioData = append(audioData, data...)
+			if len(audioData) > maxBodySize {
+				s.logger.Warn("audio too large, truncating")
+				break
+			}
+		}
+	}
+
+	if len(audioData) == 0 {
+		conn.WriteJSON(map[string]string{"status": "error", "error": "no audio received"})
+		return
+	}
+
+	// Build WAV from raw PCM for Gemini STT.
+	wavData := buildWAVFromPCM(audioData, 16000)
+	s.logger.Info("audio received", "pcm_bytes", len(audioData), "duration_ms", len(audioData)*1000/(16000*2))
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	// Phase 2: Transcribe.
+	text, err := s.agent.TranscribeAudio(ctx, wavData, "audio/wav")
+	if err != nil {
+		s.logger.Error("STT failed", "err", err)
+		conn.WriteJSON(map[string]string{"status": "error", "error": "transcription failed"})
+		return
+	}
+	if text == "" {
+		conn.WriteJSON(map[string]string{"status": "error", "error": "no speech detected"})
+		return
+	}
+	s.logger.Info("transcribed", "text", truncate(text, 100))
+	conn.WriteJSON(map[string]string{"status": "processing", "transcription": text})
+
+	// Phase 3: Process through agent.
+	chatID := s.cfg.ChatID
+	if chatID == 0 {
+		chatID = 9999
+	}
+	response, err := s.agent.Process(ctx, chatID, llm.Message{Role: "user", Content: text}, nil)
+	if err != nil {
+		s.logger.Error("agent failed", "err", err)
+		conn.WriteJSON(map[string]string{"status": "error", "error": "agent error"})
+		return
+	}
+	s.logger.Info("agent response", "len", len(response))
+
+	// Phase 4: Synthesize and send audio.
+	spokenText := stripMarkdown(response)
+	mp3Audio, err := s.agent.SynthesizeSpeech(ctx, spokenText)
+	if err != nil {
+		s.logger.Error("TTS failed", "err", err)
+		conn.WriteJSON(map[string]string{"status": "done", "response": response, "error": "TTS failed"})
+		return
+	}
+
+	// Convert to WAV for ESP32.
+	wavResponse, err := mp3ToWAV(mp3Audio)
+	if err != nil {
+		s.logger.Error("MP3→WAV failed", "err", err)
+		conn.WriteJSON(map[string]string{"status": "done", "response": response, "error": "audio conversion failed"})
+		return
+	}
+
+	// Send WAV in chunks over websocket.
+	const chunkSize = 4096
+	for offset := 0; offset < len(wavResponse); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(wavResponse) {
+			end = len(wavResponse)
+		}
+		if writeErr := conn.WriteMessage(websocket.BinaryMessage, wavResponse[offset:end]); writeErr != nil {
+			s.logger.Warn("websocket write error", "err", writeErr)
+			return
+		}
+	}
+
+	conn.WriteJSON(map[string]string{"status": "done", "response": truncate(response, 500)})
+	s.logger.Info("websocket response sent", "audio_bytes", len(wavResponse))
+}
+
+// buildWAVFromPCM wraps raw PCM data with a WAV header.
+func buildWAVFromPCM(pcm []byte, sampleRate uint32) []byte {
+	dataSize := uint32(len(pcm))
+	buf := make([]byte, 44+len(pcm))
+
+	copy(buf[0:], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:], 36+dataSize)
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 16)
+	binary.LittleEndian.PutUint16(buf[20:], 1) // PCM
+	binary.LittleEndian.PutUint16(buf[22:], 1) // mono
+	binary.LittleEndian.PutUint32(buf[24:], sampleRate)
+	binary.LittleEndian.PutUint32(buf[28:], sampleRate*2) // byte rate
+	binary.LittleEndian.PutUint16(buf[32:], 2)            // block align
+	binary.LittleEndian.PutUint16(buf[34:], 16)           // bits per sample
+	copy(buf[36:], "data")
+	binary.LittleEndian.PutUint32(buf[40:], dataSize)
+	copy(buf[44:], pcm)
+
+	return buf
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

@@ -2,7 +2,6 @@
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 
-#include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,22 +13,20 @@ namespace esphome {
 namespace voice_client {
 
 static const char *const TAG = "voice_client";
-
 static const uint32_t SAMPLE_RATE = 16000;
-static const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;
 static const int MIC_GAIN = 4;
 
 void VoiceClient::setup() {
-  ESP_LOGI(TAG, "Voice client initialized (url: %s, max_record: %ds)", api_url_.c_str(), max_record_seconds_);
+  ESP_LOGI(TAG, "Voice client ready (url: %s, max_record: %ds)", api_url_.c_str(), max_record_seconds_);
 
-  // Mic callback: fill chunk buffer, signal when full.
+  // Mic callback: fill send buffer, signal when full.
   this->mic_->add_data_callback([this](const std::vector<uint8_t> &data) {
     if (state_ != State::RECORDING) return;
-    if (mic_buf_ready_) return;  // previous chunk not consumed yet, drop
+    if (mic_send_ready_) return;  // previous chunk not sent yet
 
     const int16_t *src = reinterpret_cast<const int16_t *>(data.data());
-    int16_t *dst = reinterpret_cast<int16_t *>(mic_buf_ + mic_buf_pos_);
-    size_t samples = std::min(data.size(), MIC_CHUNK_SIZE - mic_buf_pos_) / 2;
+    int16_t *dst = reinterpret_cast<int16_t *>(mic_send_buf_ + mic_send_pos_);
+    size_t samples = std::min(data.size(), WS_AUDIO_CHUNK - mic_send_pos_) / 2;
 
     for (size_t i = 0; i < samples; i++) {
       int32_t amplified = static_cast<int32_t>(src[i]) * MIC_GAIN;
@@ -37,11 +34,11 @@ void VoiceClient::setup() {
       if (amplified < -32768) amplified = -32768;
       dst[i] = static_cast<int16_t>(amplified);
     }
-    mic_buf_pos_ += samples * 2;
+    mic_send_pos_ += samples * 2;
 
-    if (mic_buf_pos_ >= MIC_CHUNK_SIZE) {
-      mic_buf_ready_ = true;
-      mic_buf_pos_ = 0;
+    if (mic_send_pos_ >= WS_AUDIO_CHUNK) {
+      mic_send_ready_ = true;
+      mic_send_pos_ = 0;
     }
   });
 
@@ -49,13 +46,30 @@ void VoiceClient::setup() {
 }
 
 void VoiceClient::loop() {
-  if (should_start_stream_) {
-    should_start_stream_ = false;
-    xTaskCreate([](void *param) {
-      auto *self = static_cast<VoiceClient *>(param);
-      self->streaming_task_();
-      vTaskDelete(nullptr);
-    }, "voice_stream", 8192, this, 5, nullptr);
+  // Send mic chunks over WebSocket when ready.
+  if (state_ == State::RECORDING && mic_send_ready_ && ws_client_) {
+    esp_websocket_client_send_bin(ws_client_, (const char *)mic_send_buf_, WS_AUDIO_CHUNK, portMAX_DELAY);
+    mic_send_ready_ = false;
+  }
+
+  // Clean up WebSocket from main loop (not from event callback).
+  if (should_disconnect_) {
+    should_disconnect_ = false;
+    if (ws_client_) {
+      esp_websocket_client_stop(ws_client_);
+      esp_websocket_client_destroy(ws_client_);
+      ws_client_ = nullptr;
+    }
+    set_state_(State::IDLE);
+  }
+
+  // Check recording timeout.
+  if (state_ == State::RECORDING) {
+    uint32_t elapsed = millis() - record_start_;
+    if (elapsed >= (uint32_t)(max_record_seconds_ * 1000)) {
+      ESP_LOGW(TAG, "Max recording time reached (%ds)", max_record_seconds_);
+      stop_recording();
+    }
   }
 }
 
@@ -65,213 +79,182 @@ void VoiceClient::start_recording() {
     return;
   }
 
-  mic_buf_pos_ = 0;
-  mic_buf_ready_ = false;
-  stop_requested_ = false;
-  total_bytes_sent_ = 0;
-  record_start_ = millis();
+  mic_send_pos_ = 0;
+  mic_send_ready_ = false;
+  speaker_started_ = false;
+  wav_header_skipped_ = false;
+  total_audio_received_ = 0;
 
-  set_state_(State::RECORDING);
-  this->mic_->start();
-  should_start_stream_ = true;
-  ESP_LOGI(TAG, "Recording started (streaming mode)");
+  // Build WebSocket URL (convert https:// to wss://, http:// to ws://).
+  std::string ws_url = api_url_;
+  if (ws_url.find("https://") == 0) {
+    ws_url = "wss://" + ws_url.substr(8);
+  } else if (ws_url.find("http://") == 0) {
+    ws_url = "ws://" + ws_url.substr(7);
+  }
+  // Append /ws path if not already there.
+  if (ws_url.find("/ws") == std::string::npos) {
+    if (ws_url.back() != '/') ws_url += "/";
+    ws_url += "ws";
+  }
+
+  // Add token as query parameter (WebSocket doesn't support custom headers in ESP-IDF).
+  ws_url += "?token=" + api_token_;
+
+  ESP_LOGI(TAG, "Connecting to %s", ws_url.c_str());
+  set_state_(State::CONNECTING);
+
+  esp_websocket_client_config_t ws_cfg = {};
+  ws_cfg.uri = ws_url.c_str();
+  ws_cfg.buffer_size = 4096;
+  ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  ws_cfg.task_stack = 6144;
+
+  ws_client_ = esp_websocket_client_init(&ws_cfg);
+  if (!ws_client_) {
+    ESP_LOGE(TAG, "WS client init failed");
+    set_state_(State::ERROR);
+    return;
+  }
+
+  esp_websocket_register_events(ws_client_, WEBSOCKET_EVENT_ANY, ws_event_handler_, this);
+  esp_websocket_client_start(ws_client_);
 }
 
 void VoiceClient::stop_recording() {
   if (state_ != State::RECORDING) return;
-  ESP_LOGI(TAG, "Stop requested");
-  stop_requested_ = true;
-  // The streaming task will handle mic stop and state transitions.
-}
 
-void VoiceClient::streaming_task_() {
-  ESP_LOGI(TAG, "Opening HTTP connection...");
-
-  std::string auth_header = "Bearer " + api_token_;
-
-  esp_http_client_config_t config = {};
-  config.url = api_url_.c_str();
-  config.method = HTTP_METHOD_POST;
-  config.timeout_ms = 60000;
-  config.buffer_size = 2048;
-  config.buffer_size_tx = 2048;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
-
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) {
-    ESP_LOGE(TAG, "HTTP client init failed");
-    this->mic_->stop();
-    set_state_(State::ERROR);
-    return;
-  }
-
-  esp_http_client_set_header(client, "Content-Type", "audio/wav");
-  esp_http_client_set_header(client, "Authorization", auth_header.c_str());
-  esp_http_client_set_header(client, "Accept", "audio/wav");
-
-  // Open connection without specifying content length (-1 = chunked).
-  esp_err_t err = esp_http_client_open(client, -1);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
-    this->mic_->stop();
-    esp_http_client_cleanup(client);
-    set_state_(State::ERROR);
-    return;
-  }
-
-  // Send WAV header first (with placeholder data size = 0xFFFFFFFF).
-  uint8_t wav_header[WAV_HEADER_SIZE];
-  build_wav_header_(wav_header, SAMPLE_RATE);
-  esp_http_client_write(client, (const char *)wav_header, WAV_HEADER_SIZE);
-  total_bytes_sent_ += WAV_HEADER_SIZE;
-
-  ESP_LOGI(TAG, "Streaming audio...");
-
-  // Stream audio chunks as they come from the mic callback.
-  uint32_t max_ms = max_record_seconds_ * 1000;
-  while (!stop_requested_) {
-    uint32_t elapsed = millis() - record_start_;
-    if (elapsed >= max_ms) {
-      ESP_LOGW(TAG, "Max recording time reached (%ds)", max_record_seconds_);
-      break;
-    }
-
-    if (mic_buf_ready_) {
-      int written = esp_http_client_write(client, (const char *)mic_buf_, MIC_CHUNK_SIZE);
-      if (written < 0) {
-        ESP_LOGE(TAG, "HTTP write failed");
-        break;
-      }
-      total_bytes_sent_ += written;
-      mic_buf_ready_ = false;
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(10));
-    }
-  }
-
-  // Flush any remaining partial chunk.
   this->mic_->stop();
-  if (mic_buf_pos_ > 0) {
-    esp_http_client_write(client, (const char *)mic_buf_, mic_buf_pos_);
-    total_bytes_sent_ += mic_buf_pos_;
-    mic_buf_pos_ = 0;
+
+  // Flush remaining mic data.
+  if (mic_send_pos_ > 0 && ws_client_) {
+    esp_websocket_client_send_bin(ws_client_, (const char *)mic_send_buf_, mic_send_pos_, portMAX_DELAY);
+    mic_send_pos_ = 0;
+  }
+
+  // Send stop signal.
+  const char *stop_msg = "{\"action\":\"stop\"}";
+  if (ws_client_) {
+    esp_websocket_client_send_text(ws_client_, stop_msg, strlen(stop_msg), portMAX_DELAY);
   }
 
   uint32_t elapsed = millis() - record_start_;
-  size_t audio_bytes = total_bytes_sent_ - WAV_HEADER_SIZE;
-  ESP_LOGI(TAG, "Recording done: %u bytes, %u ms", (unsigned)audio_bytes, elapsed);
-
-  if (audio_bytes < BYTES_PER_SEC / 4) {
-    ESP_LOGW(TAG, "Recording too short, ignoring");
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    set_state_(State::IDLE);
-    return;
-  }
-
-  // Signal end of body and read response.
+  ESP_LOGI(TAG, "Recording stopped (%u ms)", elapsed);
   set_state_(State::PROCESSING);
-  set_led_pulse_();
-
-  int content_length = esp_http_client_fetch_headers(client);
-  int status = esp_http_client_get_status_code(client);
-  ESP_LOGI(TAG, "HTTP response: status=%d, content_length=%d", status, content_length);
-
-  if (status != 200) {
-    ESP_LOGE(TAG, "API error: HTTP %d", status);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    set_state_(State::ERROR);
-    return;
-  }
-
-  play_response_(client);
-
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-  set_state_(State::IDLE);
 }
 
-void VoiceClient::play_response_(esp_http_client_handle_t client) {
-  set_state_(State::PLAYING);
-  this->spk_->start();
+// --- WebSocket event handler (static, dispatches to instance) ---
 
-  const size_t chunk_size = 2048;
-  uint8_t chunk_buf[2048];
-  size_t total_read = 0;
-  bool header_skipped = false;
+void VoiceClient::ws_event_handler_(void *arg, esp_event_base_t base, int32_t event_id, void *event_data) {
+  auto *self = static_cast<VoiceClient *>(arg);
+  auto *data = static_cast<esp_websocket_event_data_t *>(event_data);
 
-  while (true) {
-    int read_len = esp_http_client_read(client, (char *)chunk_buf, chunk_size);
-    if (read_len <= 0) break;
-    total_read += read_len;
-
-    uint8_t *data = chunk_buf;
-    size_t data_len = read_len;
-
-    if (!header_skipped) {
-      header_skipped = true;
-      if (data_len > 44 && memcmp(data, "RIFF", 4) == 0) {
-        data += 44;
-        data_len -= 44;
+  switch (event_id) {
+    case WEBSOCKET_EVENT_CONNECTED:
+      self->on_ws_connected_();
+      break;
+    case WEBSOCKET_EVENT_DATA:
+      if (data->data_ptr && data->data_len > 0) {
+        self->on_ws_data_((uint8_t *)data->data_ptr, data->data_len, data->op_code);
       }
+      break;
+    case WEBSOCKET_EVENT_DISCONNECTED:
+      self->on_ws_disconnected_();
+      break;
+    case WEBSOCKET_EVENT_ERROR:
+      self->on_ws_error_();
+      break;
+    default:
+      break;
+  }
+}
+
+void VoiceClient::on_ws_connected_() {
+  ESP_LOGI(TAG, "WebSocket connected, starting mic");
+  record_start_ = millis();
+  set_state_(State::RECORDING);
+  this->mic_->start();
+}
+
+void VoiceClient::on_ws_data_(uint8_t *data, int len, int opcode) {
+  if (opcode == 1) {
+    // Text frame — status message from server.
+    std::string msg(reinterpret_cast<char *>(data), len);
+    ESP_LOGI(TAG, "Server: %s", msg.c_str());
+
+    if (msg.find("\"done\"") != std::string::npos) {
+      // Response complete — signal loop() to clean up.
+      if (speaker_started_) {
+        this->spk_->finish();
+        speaker_started_ = false;
+      }
+      ESP_LOGI(TAG, "Playback complete (%u bytes received)", (unsigned)total_audio_received_);
+      should_disconnect_ = true;
+    }
+  } else if (opcode == 2) {
+    // Binary frame — audio data.
+    if (!speaker_started_) {
+      set_state_(State::PLAYING);
+      this->spk_->start();
+      speaker_started_ = true;
     }
 
+    uint8_t *audio = data;
+    size_t audio_len = len;
+
+    // Skip WAV header in first binary frame.
+    if (!wav_header_skipped_ && audio_len > 44) {
+      if (memcmp(audio, "RIFF", 4) == 0) {
+        audio += 44;
+        audio_len -= 44;
+        ESP_LOGI(TAG, "Skipped WAV header");
+      }
+      wav_header_skipped_ = true;
+    }
+
+    // Feed to speaker in small pieces.
     size_t offset = 0;
-    while (offset < data_len) {
-      size_t to_write = std::min(data_len - offset, (size_t)512);
-      size_t written = this->spk_->play(data + offset, to_write);
+    while (offset < audio_len) {
+      size_t to_write = std::min(audio_len - offset, (size_t)512);
+      size_t written = this->spk_->play(audio + offset, to_write);
       if (written > 0) {
         offset += written;
       } else {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(5));
       }
     }
+    total_audio_received_ += len;
   }
-
-  ESP_LOGI(TAG, "Played %u bytes of audio", (unsigned)total_read);
-  this->spk_->finish();
-  vTaskDelay(pdMS_TO_TICKS(500));
 }
 
-void VoiceClient::build_wav_header_(uint8_t *buf, uint32_t sample_rate) {
-  // WAV header with unknown data size (0xFFFFFFFF) — server will handle it.
-  uint16_t num_channels = 1;
-  uint16_t bits_per_sample = 16;
-  uint32_t byte_rate = sample_rate * num_channels * bits_per_sample / 8;
-  uint16_t block_align = num_channels * bits_per_sample / 8;
-
-  auto write16 = [&](size_t offset, uint16_t v) {
-    buf[offset] = v & 0xFF;
-    buf[offset + 1] = (v >> 8) & 0xFF;
-  };
-  auto write32 = [&](size_t offset, uint32_t v) {
-    buf[offset] = v & 0xFF;
-    buf[offset + 1] = (v >> 8) & 0xFF;
-    buf[offset + 2] = (v >> 16) & 0xFF;
-    buf[offset + 3] = (v >> 24) & 0xFF;
-  };
-
-  memcpy(buf, "RIFF", 4);
-  write32(4, 0xFFFFFFFF);  // unknown file size
-  memcpy(buf + 8, "WAVE", 4);
-  memcpy(buf + 12, "fmt ", 4);
-  write32(16, 16);
-  write16(20, 1);  // PCM
-  write16(22, num_channels);
-  write32(24, sample_rate);
-  write32(28, byte_rate);
-  write16(32, block_align);
-  write16(34, bits_per_sample);
-  memcpy(buf + 36, "data", 4);
-  write32(40, 0xFFFFFFFF);  // unknown data size
+void VoiceClient::on_ws_disconnected_() {
+  ESP_LOGI(TAG, "WebSocket disconnected");
+  if (state_ != State::IDLE) {
+    if (speaker_started_) {
+      this->spk_->finish();
+      speaker_started_ = false;
+    }
+    should_disconnect_ = true;  // clean up in loop()
+  }
 }
+
+void VoiceClient::on_ws_error_() {
+  ESP_LOGE(TAG, "WebSocket error");
+  this->mic_->stop();
+  set_state_(State::ERROR);
+  should_disconnect_ = true;  // clean up in loop()
+}
+
+// --- LED helpers ---
 
 void VoiceClient::set_state_(State state) {
   state_ = state;
   switch (state) {
     case State::IDLE:
       set_led_color_(0, 0, 1.0f, 0.2f);
+      break;
+    case State::CONNECTING:
+      set_led_color_(1.0f, 0.5f, 0, 0.5f);  // orange
       break;
     case State::RECORDING:
       set_led_color_(1.0f, 0, 0);
