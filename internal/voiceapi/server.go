@@ -147,8 +147,9 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("agent response", "response_len", len(response))
 
-	// Step 3: Synthesize speech.
-	audio, err := s.agent.SynthesizeSpeech(ctx, response)
+	// Step 3: Synthesize speech — strip markdown for cleaner voice output.
+	spokenText := stripMarkdown(response)
+	audio, err := s.agent.SynthesizeSpeech(ctx, spokenText)
 	if err != nil {
 		s.logger.Error("TTS failed", "err", err)
 		// Return text response even if TTS fails.
@@ -258,6 +259,37 @@ func mp3ToWAV(mp3Data []byte) ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+// stripMarkdown removes markdown formatting that sounds bad when spoken.
+func stripMarkdown(s string) string {
+	// Remove code blocks.
+	for {
+		start := strings.Index(s, "```")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s[start+3:], "```")
+		if end == -1 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+3+end+3:]
+	}
+	// Remove markdown markers.
+	r := strings.NewReplacer(
+		"**", "",
+		"__", "",
+		"~~", "",
+		"`", "",
+		"* ", "- ",  // bullet points stay readable
+		"# ", "",
+		"## ", "",
+		"### ", "",
+		"#### ", "",
+	)
+	s = r.Replace(s)
+	return strings.TrimSpace(s)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

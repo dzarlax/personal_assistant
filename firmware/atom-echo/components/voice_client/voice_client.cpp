@@ -2,10 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 
-#include "esp_http_client.h"
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -18,45 +16,46 @@ namespace voice_client {
 static const char *const TAG = "voice_client";
 
 static const uint32_t SAMPLE_RATE = 16000;
-static const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;  // 16-bit mono
+static const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;
+static const int MIC_GAIN = 4;
 
 void VoiceClient::setup() {
   ESP_LOGI(TAG, "Voice client initialized (url: %s, max_record: %ds)", api_url_.c_str(), max_record_seconds_);
 
-  // Register callback to receive microphone data into static buffer.
+  // Mic callback: fill chunk buffer, signal when full.
   this->mic_->add_data_callback([this](const std::vector<uint8_t> &data) {
     if (state_ != State::RECORDING) return;
-    size_t pos = buf_pos_;
-    size_t space = AUDIO_BUF_SIZE - pos;
-    if (space == 0) return;
-    size_t to_copy = std::min(data.size(), space);
-    memcpy(audio_buf_ + pos, data.data(), to_copy);
-    buf_pos_ = pos + to_copy;
+    if (mic_buf_ready_) return;  // previous chunk not consumed yet, drop
+
+    const int16_t *src = reinterpret_cast<const int16_t *>(data.data());
+    int16_t *dst = reinterpret_cast<int16_t *>(mic_buf_ + mic_buf_pos_);
+    size_t samples = std::min(data.size(), MIC_CHUNK_SIZE - mic_buf_pos_) / 2;
+
+    for (size_t i = 0; i < samples; i++) {
+      int32_t amplified = static_cast<int32_t>(src[i]) * MIC_GAIN;
+      if (amplified > 32767) amplified = 32767;
+      if (amplified < -32768) amplified = -32768;
+      dst[i] = static_cast<int16_t>(amplified);
+    }
+    mic_buf_pos_ += samples * 2;
+
+    if (mic_buf_pos_ >= MIC_CHUNK_SIZE) {
+      mic_buf_ready_ = true;
+      mic_buf_pos_ = 0;
+    }
   });
 
   set_state_(State::IDLE);
 }
 
 void VoiceClient::loop() {
-  // Check recording timeout.
-  if (state_ == State::RECORDING) {
-    uint32_t elapsed_ms = millis() - record_start_;
-    uint32_t max_ms = max_record_seconds_ * 1000;
-    // Also stop if buffer is full.
-    if (elapsed_ms >= max_ms || buf_pos_ >= AUDIO_BUF_SIZE) {
-      ESP_LOGW(TAG, "Max recording time/buffer reached");
-      stop_recording();
-    }
-  }
-
-  if (should_process_) {
-    should_process_ = false;
-    // Run HTTP request in a separate FreeRTOS task to avoid watchdog timeout.
+  if (should_start_stream_) {
+    should_start_stream_ = false;
     xTaskCreate([](void *param) {
       auto *self = static_cast<VoiceClient *>(param);
-      self->do_process_();
+      self->streaming_task_();
       vTaskDelete(nullptr);
-    }, "voice_http", 8192, this, 5, nullptr);
+    }, "voice_stream", 8192, this, 5, nullptr);
   }
 }
 
@@ -66,44 +65,34 @@ void VoiceClient::start_recording() {
     return;
   }
 
-  // Leave space for WAV header at the beginning.
-  buf_pos_ = WAV_HEADER_SIZE;
+  mic_buf_pos_ = 0;
+  mic_buf_ready_ = false;
+  stop_requested_ = false;
+  total_bytes_sent_ = 0;
   record_start_ = millis();
+
   set_state_(State::RECORDING);
   this->mic_->start();
-  ESP_LOGI(TAG, "Recording started");
+  should_start_stream_ = true;
+  ESP_LOGI(TAG, "Recording started (streaming mode)");
 }
 
 void VoiceClient::stop_recording() {
   if (state_ != State::RECORDING) return;
-
-  this->mic_->stop();
-
-  size_t data_size = buf_pos_ - WAV_HEADER_SIZE;
-  uint32_t elapsed_ms = millis() - record_start_;
-  ESP_LOGI(TAG, "Recording stopped: %u bytes, %u ms", (unsigned)data_size, elapsed_ms);
-
-  if (data_size < BYTES_PER_SEC / 4) {
-    ESP_LOGW(TAG, "Recording too short (%u bytes), ignoring", (unsigned)data_size);
-    set_state_(State::IDLE);
-    return;
-  }
-
-  build_wav_header_(audio_buf_, data_size);
-  set_state_(State::PROCESSING);
-  should_process_ = true;
+  ESP_LOGI(TAG, "Stop requested");
+  stop_requested_ = true;
+  // The streaming task will handle mic stop and state transitions.
 }
 
-void VoiceClient::do_process_() {
-  size_t total_size = buf_pos_;
-  ESP_LOGI(TAG, "Sending %u bytes to API...", (unsigned)total_size);
+void VoiceClient::streaming_task_() {
+  ESP_LOGI(TAG, "Opening HTTP connection...");
 
   std::string auth_header = "Bearer " + api_token_;
 
   esp_http_client_config_t config = {};
   config.url = api_url_.c_str();
   config.method = HTTP_METHOD_POST;
-  config.timeout_ms = 30000;
+  config.timeout_ms = 60000;
   config.buffer_size = 2048;
   config.buffer_size_tx = 2048;
   config.crt_bundle_attach = esp_crt_bundle_attach;
@@ -111,6 +100,7 @@ void VoiceClient::do_process_() {
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
     ESP_LOGE(TAG, "HTTP client init failed");
+    this->mic_->stop();
     set_state_(State::ERROR);
     return;
   }
@@ -118,43 +108,95 @@ void VoiceClient::do_process_() {
   esp_http_client_set_header(client, "Content-Type", "audio/wav");
   esp_http_client_set_header(client, "Authorization", auth_header.c_str());
   esp_http_client_set_header(client, "Accept", "audio/wav");
+  esp_http_client_set_header(client, "Transfer-Encoding", "chunked");
 
-  // Use open/write/fetch/read instead of perform() to access the response body.
-  esp_err_t err = esp_http_client_open(client, total_size);
+  // Open connection without specifying content length (-1 = chunked).
+  esp_err_t err = esp_http_client_open(client, -1);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
+    this->mic_->stop();
     esp_http_client_cleanup(client);
     set_state_(State::ERROR);
     return;
   }
 
-  // Write request body.
-  int written = esp_http_client_write(client, (const char *)audio_buf_, total_size);
-  if (written < 0) {
-    ESP_LOGE(TAG, "HTTP write failed");
+  // Send WAV header first (with placeholder data size = 0xFFFFFFFF).
+  uint8_t wav_header[WAV_HEADER_SIZE];
+  build_wav_header_(wav_header, SAMPLE_RATE);
+  esp_http_client_write(client, (const char *)wav_header, WAV_HEADER_SIZE);
+  total_bytes_sent_ += WAV_HEADER_SIZE;
+
+  ESP_LOGI(TAG, "Streaming audio...");
+
+  // Stream audio chunks as they come from the mic callback.
+  uint32_t max_ms = max_record_seconds_ * 1000;
+  while (!stop_requested_) {
+    uint32_t elapsed = millis() - record_start_;
+    if (elapsed >= max_ms) {
+      ESP_LOGW(TAG, "Max recording time reached (%ds)", max_record_seconds_);
+      break;
+    }
+
+    if (mic_buf_ready_) {
+      int written = esp_http_client_write(client, (const char *)mic_buf_, MIC_CHUNK_SIZE);
+      if (written < 0) {
+        ESP_LOGE(TAG, "HTTP write failed");
+        break;
+      }
+      total_bytes_sent_ += written;
+      mic_buf_ready_ = false;
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+  }
+
+  // Flush any remaining partial chunk.
+  this->mic_->stop();
+  if (mic_buf_pos_ > 0) {
+    esp_http_client_write(client, (const char *)mic_buf_, mic_buf_pos_);
+    total_bytes_sent_ += mic_buf_pos_;
+    mic_buf_pos_ = 0;
+  }
+
+  uint32_t elapsed = millis() - record_start_;
+  size_t audio_bytes = total_bytes_sent_ - WAV_HEADER_SIZE;
+  ESP_LOGI(TAG, "Recording done: %u bytes, %u ms", (unsigned)audio_bytes, elapsed);
+
+  if (audio_bytes < BYTES_PER_SEC / 4) {
+    ESP_LOGW(TAG, "Recording too short, ignoring");
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    set_state_(State::ERROR);
+    set_state_(State::IDLE);
     return;
   }
-  ESP_LOGI(TAG, "Sent %d bytes", written);
 
-  // Read response headers.
+  // Signal end of body and read response.
+  set_state_(State::PROCESSING);
+  set_led_pulse_();
+
   int content_length = esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
   ESP_LOGI(TAG, "HTTP response: status=%d, content_length=%d", status, content_length);
 
   if (status != 200) {
     ESP_LOGE(TAG, "API error: HTTP %d", status);
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     set_state_(State::ERROR);
     return;
   }
 
-  // Stream response directly to speaker — no full buffering needed.
+  play_response_(client);
+
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  set_state_(State::IDLE);
+}
+
+void VoiceClient::play_response_(esp_http_client_handle_t client) {
   set_state_(State::PLAYING);
   this->spk_->start();
 
-  // Read and play in chunks — supports responses of any length.
   const size_t chunk_size = 2048;
   uint8_t chunk_buf[2048];
   size_t total_read = 0;
@@ -168,17 +210,14 @@ void VoiceClient::do_process_() {
     uint8_t *data = chunk_buf;
     size_t data_len = read_len;
 
-    // Skip WAV header in the first chunk.
     if (!header_skipped) {
       header_skipped = true;
       if (data_len > 44 && memcmp(data, "RIFF", 4) == 0) {
         data += 44;
         data_len -= 44;
-        ESP_LOGI(TAG, "Skipping WAV header, streaming PCM");
       }
     }
 
-    // Feed to speaker in small pieces, wait if buffer is full.
     size_t offset = 0;
     while (offset < data_len) {
       size_t to_write = std::min(data_len - offset, (size_t)512);
@@ -191,22 +230,16 @@ void VoiceClient::do_process_() {
     }
   }
 
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-
-  ESP_LOGI(TAG, "Streamed %u bytes of audio to speaker", (unsigned)total_read);
-
-  // Wait for speaker to finish playing remaining buffer.
+  ESP_LOGI(TAG, "Played %u bytes of audio", (unsigned)total_read);
   this->spk_->finish();
   vTaskDelay(pdMS_TO_TICKS(500));
-  set_state_(State::IDLE);
 }
 
-void VoiceClient::build_wav_header_(uint8_t *buf, uint32_t data_size) {
-  uint32_t file_size = data_size + 36;
+void VoiceClient::build_wav_header_(uint8_t *buf, uint32_t sample_rate) {
+  // WAV header with unknown data size (0xFFFFFFFF) — server will handle it.
   uint16_t num_channels = 1;
   uint16_t bits_per_sample = 16;
-  uint32_t byte_rate = SAMPLE_RATE * num_channels * bits_per_sample / 8;
+  uint32_t byte_rate = sample_rate * num_channels * bits_per_sample / 8;
   uint16_t block_align = num_channels * bits_per_sample / 8;
 
   auto write16 = [&](size_t offset, uint16_t v) {
@@ -221,18 +254,18 @@ void VoiceClient::build_wav_header_(uint8_t *buf, uint32_t data_size) {
   };
 
   memcpy(buf, "RIFF", 4);
-  write32(4, file_size);
+  write32(4, 0xFFFFFFFF);  // unknown file size
   memcpy(buf + 8, "WAVE", 4);
   memcpy(buf + 12, "fmt ", 4);
   write32(16, 16);
   write16(20, 1);  // PCM
   write16(22, num_channels);
-  write32(24, SAMPLE_RATE);
+  write32(24, sample_rate);
   write32(28, byte_rate);
   write16(32, block_align);
   write16(34, bits_per_sample);
   memcpy(buf + 36, "data", 4);
-  write32(40, data_size);
+  write32(40, 0xFFFFFFFF);  // unknown data size
 }
 
 void VoiceClient::set_state_(State state) {

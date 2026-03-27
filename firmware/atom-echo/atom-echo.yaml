@@ -43,6 +43,7 @@ microphone:
     sample_rate: 16000
     bits_per_sample: 16bit
     channel: left
+    use_apll: true
 
 # Speaker (NS4168 I2S amp)
 speaker:
@@ -110,4 +111,4 @@ voice_client:
   led: status_led
   api_url: !secret voice_api_url
   api_token: !secret voice_api_token
-  max_record_seconds: 3
+  max_record_seconds: 10

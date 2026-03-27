@@ -25,7 +25,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_LED): cv.use_id(light.LightState),
         cv.Required(CONF_API_URL): cv.string,
         cv.Required(CONF_API_TOKEN): cv.string,
-        cv.Optional(CONF_MAX_RECORD_SECONDS, default=4): cv.int_range(min=1, max=8),
+        cv.Optional(CONF_MAX_RECORD_SECONDS, default=10): cv.int_range(min=1, max=30),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 

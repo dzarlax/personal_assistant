@@ -5,21 +5,22 @@
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/components/light/light_state.h"
 
+#include "esp_http_client.h"
+
 namespace esphome {
 namespace voice_client {
 
 enum class State : uint8_t {
   IDLE,
-  RECORDING,
-  PROCESSING,
-  PLAYING,
+  RECORDING,      // mic on, streaming audio via chunked HTTP
+  PROCESSING,     // HTTP request sent, waiting for response
+  PLAYING,        // streaming response to speaker
   ERROR,
 };
 
-// Fixed audio buffer: 96 KB — used for both recording and playback (not simultaneously).
-// Recording: ~3s at 16kHz 16bit mono. Playback: ~3s of WAV response.
 static const size_t WAV_HEADER_SIZE = 44;
-static const size_t AUDIO_BUF_SIZE = 96 * 1024;
+// Small ring buffer for mic callback → HTTP write handoff.
+static const size_t MIC_CHUNK_SIZE = 4096;
 
 class VoiceClient : public Component {
  public:
@@ -41,8 +42,9 @@ class VoiceClient : public Component {
   void set_state_(State state);
   void set_led_color_(float r, float g, float b, float brightness = 0.8f);
   void set_led_pulse_();
-  void do_process_();
-  void build_wav_header_(uint8_t *buf, uint32_t data_size);
+  void streaming_task_();
+  void play_response_(esp_http_client_handle_t client);
+  void build_wav_header_(uint8_t *buf, uint32_t sample_rate);
 
   microphone::Microphone *mic_{nullptr};
   speaker::Speaker *spk_{nullptr};
@@ -50,13 +52,19 @@ class VoiceClient : public Component {
 
   std::string api_url_;
   std::string api_token_;
-  int max_record_seconds_{3};
+  int max_record_seconds_{10};
 
   State state_{State::IDLE};
-  uint8_t audio_buf_[AUDIO_BUF_SIZE];
-  volatile size_t buf_pos_{0};  // written from ISR callback
+
+  // Ring buffer for mic→HTTP streaming.
+  uint8_t mic_buf_[MIC_CHUNK_SIZE];
+  volatile size_t mic_buf_pos_{0};
+  volatile bool mic_buf_ready_{false};  // chunk ready to send
+
   uint32_t record_start_{0};
-  bool should_process_{false};
+  volatile bool stop_requested_{false};
+  bool should_start_stream_{false};
+  size_t total_bytes_sent_{0};
 };
 
 }  // namespace voice_client
