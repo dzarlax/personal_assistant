@@ -11,7 +11,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Voice API + Atom Echo** — HTTP and WebSocket voice API for hardware voice assistants; ships with ESPHome firmware for M5Stack Atom Echo (push-to-talk, LED feedback, streaming audio over WebSocket)
 - **Text-to-speech** — Edge TTS (Microsoft) integration: no API key, high quality Russian/English voices, MP3 output for Telegram, WAV for hardware devices
 - **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
-- **Filesystem tools** — built-in `list_files`, `read_file`, `write_file`, `append_file`, `delete_file`, `search_files` scoped to a configurable directory; path traversal protection; great for personal notes, reference materials, and shared context with Claude Bridge
+- **Filesystem tools** — built-in `fs_list`, `fs_read`, `fs_write`, `fs_append`, `fs_delete`, `fs_search` scoped to a configurable directory; path traversal protection; great for personal notes, reference materials, and shared context with Claude Bridge
 - **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
 - **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
@@ -272,12 +272,12 @@ When enabled, the bot gains built-in file management tools scoped to the configu
 
 | Tool | Description |
 |---|---|
-| `list_files` | List files and directories |
-| `read_file` | Read file contents (max 512 KB) |
-| `write_file` | Create or overwrite a file |
-| `append_file` | Append to a file (creates if missing) |
-| `delete_file` | Delete a file |
-| `search_files` | Case-insensitive text search across files |
+| `fs_list` | List files and directories |
+| `fs_read` | Read file contents (max 512 KB) |
+| `fs_write` | Create or overwrite a file |
+| `fs_append` | Append to a file (creates if missing) |
+| `fs_delete` | Delete a file |
+| `fs_search` | Case-insensitive text search across files |
 
 All paths are relative to the root directory. Path traversal (`../`) is blocked. Mount the directory into the container via docker-compose volumes:
 

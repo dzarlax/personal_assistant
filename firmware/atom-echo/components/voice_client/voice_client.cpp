@@ -55,10 +55,17 @@ void VoiceClient::loop() {
   // Clean up WebSocket from main loop (not from event callback).
   if (should_disconnect_) {
     should_disconnect_ = false;
-    if (ws_client_) {
-      esp_websocket_client_stop(ws_client_);
-      esp_websocket_client_destroy(ws_client_);
-      ws_client_ = nullptr;
+    auto *client = ws_client_;
+    ws_client_ = nullptr;
+    if (client) {
+      // Run cleanup in a separate task to avoid blocking loop / watchdog.
+      xTaskCreate([](void *param) {
+        auto *c = static_cast<esp_websocket_client_handle_t>(param);
+        esp_websocket_client_stop(c);
+        esp_websocket_client_destroy(c);
+        ESP_LOGI("voice_client", "WebSocket cleaned up");
+        vTaskDelete(nullptr);
+      }, "ws_cleanup", 4096, client, 1, nullptr);
     }
     set_state_(State::IDLE);
   }

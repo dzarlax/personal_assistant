@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	fsListFilesTool      = "list_files"
-	fsReadFileTool       = "read_file"
-	fsWriteFileTool      = "write_file"
-	fsAppendFileTool     = "append_file"
-	fsDeleteFileTool     = "delete_file"
-	fsSearchFilesTool    = "search_files"
+	fsListFilesTool      = "fs_list"
+	fsReadFileTool       = "fs_read"
+	fsWriteFileTool      = "fs_write"
+	fsAppendFileTool     = "fs_append"
+	fsDeleteFileTool     = "fs_delete"
+	fsSearchFilesTool    = "fs_search"
 
 	fsMaxReadSize   = 512 * 1024 // 512 KB
 	fsMaxSearchHits = 200
