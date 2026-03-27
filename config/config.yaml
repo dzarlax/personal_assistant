@@ -106,3 +106,10 @@ filesystem:
 tts:
   enabled: true
   voice: ru-RU-DmitryNeural  # also: en-US-EmmaMultilingualNeural, uk-UA-OstapNeural
+
+# Voice HTTP API — for Atom Echo and other voice clients.
+voice_api:
+  enabled: true
+  listen: ":8086"
+  token: ${VOICE_API_TOKEN}
+  chat_id: 9999

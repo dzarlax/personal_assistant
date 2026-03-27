@@ -16,6 +16,7 @@ type Config struct {
 	WebSearch  WebSearchConfig  `yaml:"web_search"`
 	Filesystem FilesystemConfig `yaml:"filesystem"`
 	TTS        TTSConfig        `yaml:"tts"`
+	VoiceAPI   VoiceAPIConfig   `yaml:"voice_api"`
 }
 
 type WebSearchConfig struct {
@@ -39,6 +40,13 @@ type TTSConfig struct {
 	Rate    string `yaml:"rate"`   // e.g. "+0%", "+20%"
 	Pitch   string `yaml:"pitch"`  // e.g. "+0Hz"
 	Volume  string `yaml:"volume"` // e.g. "+0%"
+}
+
+type VoiceAPIConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Listen  string `yaml:"listen"`  // e.g. ":8086"
+	Token   string `yaml:"token"`   // Bearer auth token
+	ChatID  int64  `yaml:"chat_id"` // dedicated conversation chat_id
 }
 
 type MCPServerConfig struct {

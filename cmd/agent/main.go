@@ -15,6 +15,7 @@ import (
 	"telegram-agent/internal/mcp"
 	"telegram-agent/internal/store"
 	"telegram-agent/internal/telegram"
+	"telegram-agent/internal/voiceapi"
 )
 
 func main() {
@@ -246,6 +247,16 @@ func main() {
 	if err != nil {
 		logger.Error("failed to init Telegram handler", "err", err)
 		os.Exit(1)
+	}
+
+	if cfg.VoiceAPI.Enabled {
+		voiceSrv := voiceapi.New(ag, cfg.VoiceAPI, logger)
+		go func() {
+			if err := voiceSrv.ListenAndServe(); err != nil {
+				logger.Error("voice API error", "err", err)
+			}
+		}()
+		defer voiceSrv.Shutdown(context.Background())
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
