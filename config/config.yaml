@@ -95,3 +95,9 @@ web_search:
   enabled: true
   api_key: ${OLLAMA_API_KEY}
   base_url: https://ollama.com   # default
+
+# Filesystem access — gives the assistant read/write access to a local directory.
+# Mount the directory into the container via volumes in docker-compose.yml.
+filesystem:
+  enabled: true
+  root: /assistant_context

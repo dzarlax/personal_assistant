@@ -9,6 +9,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
 - **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline
 - **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
+- **Filesystem tools** — built-in `list_files`, `read_file`, `write_file`, `append_file`, `delete_file`, `search_files` scoped to a configurable directory; path traversal protection; great for personal notes, reference materials, and shared context with Claude Bridge
 - **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
 - **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
@@ -128,7 +129,7 @@ Data is stored in PostgreSQL (set `DATABASE_URL` in `.env`). Falls back to `./da
 .env.example           # template
 config/
   config.yaml          # model and routing config
-  system_prompt.md     # personalise the assistant here
+  system_prompt.md     # fallback system prompt (used when filesystem is disabled)
   mcp.json             # MCP servers — not in git
   mcp.json.example     # template
   routing.json         # runtime routing overrides — auto-created
@@ -222,6 +223,11 @@ tool_filter:
 #   enabled: true
 #   api_key: ${OLLAMA_API_KEY}
 #   base_url: https://ollama.com  # default
+
+# Filesystem access — gives the assistant read/write access to a local directory
+# filesystem:
+#   enabled: true
+#   root: /assistant_context   # mount via docker-compose volumes
 ```
 
 ### `config/mcp.json`
@@ -250,6 +256,28 @@ Same format as Claude Desktop. Supports custom headers for auth and per-server t
 ### `config/system_prompt.md`
 
 Plain text or Markdown injected as system prompt on every request.
+
+When `filesystem.enabled` is true and a `CLAUDE.md` file exists at `filesystem.root`, the bot reads it as the system prompt instead. This allows sharing a single prompt file between the bot and Claude Bridge — no duplication, no sync issues.
+
+### `filesystem`
+
+When enabled, the bot gains built-in file management tools scoped to the configured root directory:
+
+| Tool | Description |
+|---|---|
+| `list_files` | List files and directories |
+| `read_file` | Read file contents (max 512 KB) |
+| `write_file` | Create or overwrite a file |
+| `append_file` | Append to a file (creates if missing) |
+| `delete_file` | Delete a file |
+| `search_files` | Case-insensitive text search across files |
+
+All paths are relative to the root directory. Path traversal (`../`) is blocked. Mount the directory into the container via docker-compose volumes:
+
+```yaml
+volumes:
+  - /path/to/context:/assistant_context:rw
+```
 
 ## Bot Commands
 
@@ -348,9 +376,17 @@ No source code on the server — only the binary, config, and docker-compose:
 │   ├── config.yaml           # models and routing
 │   ├── routing.json          # runtime routing overrides
 │   ├── mcp.json              # MCP servers
-│   └── system_prompt.md      # system prompt
+│   └── system_prompt.md      # fallback system prompt
 └── data/
     └── routing.json          # runtime state
+
+# Shared context directory (mounted into bot container as /assistant_context)
+~/vol/assistant_context/
+├── CLAUDE.md                 # unified system prompt (bot + Claude Bridge)
+├── .mcp.json                 # MCP config for Claude CLI
+├── notes/                    # personal notes (read/write via filesystem tools)
+├── reference/                # reference materials
+└── tasks/                    # task files and plans
 ```
 
 #### systemd service
@@ -440,6 +476,7 @@ flowchart TD
     end
 
     WebSearch["Web Search\n(Ollama API)"]
+    FS["Filesystem Tools\n(notes · reference · tasks)"]
 
     subgraph LLMs ["LLM Providers"]
         DS["deepseek"]
@@ -477,6 +514,8 @@ flowchart TD
     Agent --> Router
     Agent -->|"query embed · top-K filter"| MCP
     Agent <-->|"web_search tool"| WebSearch
+    Agent <-->|"read · write · search"| FS
+    FS <-->|"shared directory"| CTX
     Handler -->|"voice → transcribe"| Agent
     MCP <-->|"embed tools at startup"| Emb
     MCP <-->|"tools/call"| Servers

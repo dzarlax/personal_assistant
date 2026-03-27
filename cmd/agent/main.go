@@ -29,11 +29,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	sysPromptBytes, err := os.ReadFile("config/system_prompt.md")
+	sysPromptPath := "config/system_prompt.md"
+	if cfg.Filesystem.Enabled && cfg.Filesystem.Root != "" {
+		candidate := cfg.Filesystem.Root + "/CLAUDE.md"
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			sysPromptPath = candidate
+		}
+	}
+	sysPromptBytes, err := os.ReadFile(sysPromptPath)
 	if err != nil {
-		logger.Error("failed to load system prompt", "err", err)
+		logger.Error("failed to load system prompt", "err", err, "path", sysPromptPath)
 		os.Exit(1)
 	}
+	logger.Info("system prompt loaded", "path", sysPromptPath)
 
 	// Build providers map — all named LLM providers available for routing and /model switching.
 	providers := make(map[string]llm.Provider)
@@ -209,6 +217,15 @@ func main() {
 			APIKey:  cfg.WebSearch.APIKey,
 		})
 		logger.Info("web search enabled", "base_url", baseURL)
+	}
+
+	if cfg.Filesystem.Enabled {
+		root := cfg.Filesystem.Root
+		if root == "" {
+			root = "/assistant_context"
+		}
+		ag.EnableFilesystem(agent.FilesystemConfig{Root: root})
+		logger.Info("filesystem tools enabled", "root", root)
 	}
 
 	handler, err := telegram.NewHandler(cfg.Telegram, ag, logger)

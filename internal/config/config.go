@@ -14,6 +14,7 @@ type Config struct {
 	Routing    RoutingConfig    `yaml:"routing"`
 	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
 	WebSearch  WebSearchConfig  `yaml:"web_search"`
+	Filesystem FilesystemConfig `yaml:"filesystem"`
 }
 
 type WebSearchConfig struct {
@@ -24,6 +25,11 @@ type WebSearchConfig struct {
 
 type ToolFilterConfig struct {
 	TopK int `yaml:"top_k"` // 0 = disabled
+}
+
+type FilesystemConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Root    string `yaml:"root"` // absolute path on the host/container
 }
 
 type MCPServerConfig struct {

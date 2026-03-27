@@ -43,6 +43,7 @@ type Agent struct {
 	logger     *slog.Logger
 	webSearch  *WebSearchConfig  // nil = disabled
 	transcribe *TranscribeConfig // nil = disabled
+	filesystem *FilesystemConfig // nil = disabled
 }
 
 func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Compacter, sysPrompt string, logger *slog.Logger) *Agent {
@@ -80,6 +81,11 @@ func (a *Agent) EnableWebSearch(cfg WebSearchConfig) {
 	a.webSearch = &cfg
 }
 
+// EnableFilesystem activates built-in filesystem tools scoped to cfg.Root.
+func (a *Agent) EnableFilesystem(cfg FilesystemConfig) {
+	a.filesystem = &cfg
+}
+
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
 	queryText := messageText(userMsg)
@@ -101,6 +107,9 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	}
 	if a.webSearch != nil {
 		tools = append(tools, webSearchTool())
+	}
+	if a.filesystem != nil {
+		tools = append(tools, filesystemTools()...)
 	}
 
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
@@ -189,6 +198,9 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 	}
 	if a.webSearch != nil {
 		tools = append(tools, webSearchTool())
+	}
+	if a.filesystem != nil {
+		tools = append(tools, filesystemTools()...)
 	}
 
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
@@ -366,6 +378,11 @@ func (a *Agent) ListTools() []ToolInfo {
 	if a.webSearch != nil {
 		result = append(result, ToolInfo{Name: webSearchToolName, ServerName: "ollama"})
 	}
+	if a.filesystem != nil {
+		for _, t := range filesystemTools() {
+			result = append(result, ToolInfo{Name: t.Name, ServerName: "filesystem"})
+		}
+	}
 	return result
 }
 
@@ -385,10 +402,16 @@ func (a *Agent) summarizeToolResult(ctx context.Context, toolName, result string
 }
 
 // callTool dispatches a tool call to the appropriate handler:
-// built-in tools (web_search) are handled directly; everything else goes to MCP.
+// built-in tools are handled directly; everything else goes to MCP.
 func (a *Agent) callTool(ctx context.Context, name, argsJSON string) (string, error) {
 	if name == webSearchToolName && a.webSearch != nil {
 		return callWebSearch(ctx, *a.webSearch, argsJSON)
+	}
+	if a.filesystem != nil {
+		switch name {
+		case fsListFilesTool, fsReadFileTool, fsWriteFileTool, fsAppendFileTool, fsDeleteFileTool, fsSearchFilesTool:
+			return callFilesystem(*a.filesystem, name, argsJSON)
+		}
 	}
 	if a.mcp != nil {
 		return a.mcp.CallTool(ctx, name, argsJSON)
