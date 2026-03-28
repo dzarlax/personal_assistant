@@ -116,6 +116,8 @@ func (c *Client) Initialize(ctx context.Context) {
 				continue
 			}
 			t.ServerName = name
+			// Always prefix tool names with server name to avoid conflicts.
+			t.Name = name + "__" + t.Name
 			c.tools = append(c.tools, t)
 			c.toolServers[t.Name] = name
 			allowed++
@@ -287,7 +289,12 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 	srv := c.servers[serverName]
-	result, err := srv.callTool(ctx, name, json.RawMessage(argsJSON))
+	// Strip server prefix: "server__tool_name" → "tool_name"
+	originalName := name
+	if idx := strings.Index(name, "__"); idx >= 0 {
+		originalName = name[idx+2:]
+	}
+	result, err := srv.callTool(ctx, originalName, json.RawMessage(argsJSON))
 	if err == nil {
 		return result, nil
 	}
@@ -300,7 +307,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			c.logger.Warn("mcp reconnect failed", "server", serverName, "err", reinitErr)
 			return "", err // return original error
 		}
-		result, err = srv.callTool(ctx, name, json.RawMessage(argsJSON))
+		result, err = srv.callTool(ctx, originalName, json.RawMessage(argsJSON))
 	}
 	return result, err
 }
