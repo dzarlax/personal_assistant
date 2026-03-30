@@ -100,7 +100,7 @@ routing:
   multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)
   compaction_model: deepseek
   classifier: ollama           # gemma3:1b rates complexity 1/2/3
-  classifier_min_length: 100
+  classifier_min_length: 0    # 0 = always classify; >0 = min chars; <0 = disabled
 
 tool_filter:
   top_k: 20

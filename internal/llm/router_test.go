@@ -254,7 +254,7 @@ func TestRouter_ClassifierSkippedForShortMessages(t *testing.T) {
 	}
 }
 
-// TestRouter_ClassifierDisabled: minLen=0 → classifier никогда не вызывается.
+// TestRouter_ClassifierDisabled: minLen<0 → classifier никогда не вызывается.
 func TestRouter_ClassifierDisabled(t *testing.T) {
 	classifier := &mockProvider{name: "classifier"}
 	primary := &mockProvider{name: "primary", resp: Response{Content: "ok"}}
@@ -262,7 +262,7 @@ func TestRouter_ClassifierDisabled(t *testing.T) {
 	r := newTestRouter(RouterConfig{
 		Primary:          "primary",
 		Classifier:       "classifier",
-		ClassifierMinLen: 0, // отключён
+		ClassifierMinLen: -1, // отключён
 	}, map[string]Provider{
 		"primary":    primary,
 		"classifier": classifier,
@@ -270,7 +270,33 @@ func TestRouter_ClassifierDisabled(t *testing.T) {
 
 	_, _ = r.Chat(context.Background(), []Message{{Role: "user", Content: "long message that would normally trigger classifier"}}, "", nil)
 	if classifier.calls != 0 {
-		t.Errorf("classifier should be disabled when minLen=0, got %d calls", classifier.calls)
+		t.Errorf("classifier should be disabled when minLen<0, got %d calls", classifier.calls)
+	}
+}
+
+// TestRouter_ClassifierAlwaysWhenZero: minLen=0 → classifier вызывается для любого сообщения.
+func TestRouter_ClassifierAlwaysWhenZero(t *testing.T) {
+	classifier := &mockProvider{name: "classifier", resp: Response{Content: "1"}}
+	local := &mockProvider{name: "local", resp: Response{Content: "local"}}
+	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud"}}
+
+	r := newTestRouter(RouterConfig{
+		Local:            "local",
+		Primary:          "primary",
+		Classifier:       "classifier",
+		ClassifierMinLen: 0, // всегда классифицировать
+	}, map[string]Provider{
+		"local":      local,
+		"primary":    primary,
+		"classifier": classifier,
+	})
+
+	resp, _ := r.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, "", nil)
+	if classifier.calls != 1 {
+		t.Errorf("classifier should be called for any message when minLen=0, got %d calls", classifier.calls)
+	}
+	if resp.Content != "local" {
+		t.Errorf("expected local, got %q", resp.Content)
 	}
 }
 

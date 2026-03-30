@@ -343,8 +343,12 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
-	// Multimodal routing — use dedicated model only if the active provider can't handle images
+	// Multimodal routing — prefer local/primary if they support vision
 	if multimodal {
+		if p := r.get(cfg.Local); p != nil && supportsVision(p) {
+			slog.Info("routing", "reason", "local+vision", "provider", p.Name())
+			return p
+		}
 		if p := r.get(cfg.Primary); p != nil && supportsVision(p) {
 			slog.Info("routing", "reason", "primary+vision", "provider", p.Name())
 			return p
@@ -355,9 +359,13 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
-	// Classifier-based three-level routing: 1=local, 2=primary, 3=reasoner
-	if cfg.ClassifierMinLen > 0 {
-		if text := lastUserText(messages); len([]rune(text)) >= cfg.ClassifierMinLen {
+	// Classifier-based three-level routing: 1=local, 2=primary, 3=reasoner.
+	// ClassifierMinLen > 0: only classify messages longer than threshold.
+	// ClassifierMinLen == 0: always classify (classifier is a free local model).
+	// ClassifierMinLen < 0: disabled entirely.
+	if cfg.ClassifierMinLen >= 0 && r.get(cfg.Classifier) != nil {
+		text := lastUserText(messages)
+		if cfg.ClassifierMinLen == 0 || len([]rune(text)) >= cfg.ClassifierMinLen {
 			level := r.classify(ctx, text)
 			switch level {
 			case 1:
@@ -365,15 +373,13 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 					slog.Info("routing", "reason", "classifier→local", "level", 1, "provider", p.Name())
 					return p
 				}
-				// local not configured — fall through to primary
 			case 3:
 				if p := r.get(cfg.Reasoner); p != nil {
 					slog.Info("routing", "reason", "classifier→reasoner", "level", 3, "provider", p.Name())
 					return p
 				}
-				// reasoner not configured — fall through to primary
 			}
-			// level 2 or fallback from 1/3 → use primary
+			// level 2 or fallback → primary
 		}
 	}
 
