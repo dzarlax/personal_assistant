@@ -57,7 +57,8 @@ type Router struct {
 	mu          sync.RWMutex
 	override    string // set via SetOverride; any key in providers, or "" for auto
 	persistPath string // path to save/load routing overrides; empty = no persistence
-	lastRouted  string // name of last provider used (for display)
+	lastRouted    string // display name of last provider (for UI)
+	lastRoutedKey string // map key of last provider (for tool continuation)
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
@@ -197,6 +198,7 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 	provider := r.pick(ctx, messages)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
+	r.lastRoutedKey = r.keyFor(provider)
 	r.mu.Unlock()
 
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
@@ -232,6 +234,7 @@ func (r *Router) ChatStream(ctx context.Context, messages []Message, systemPromp
 	provider := r.pick(ctx, messages)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
+	r.lastRoutedKey = r.keyFor(provider)
 	r.mu.Unlock()
 	if sp, ok := provider.(StreamProvider); ok {
 		ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
@@ -382,6 +385,14 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
+	// Tool continuation — keep using the same provider that started the tool loop.
+	if hasToolMessages(messages) && r.lastRoutedKey != "" {
+		if last := r.get(r.lastRoutedKey); last != nil {
+			slog.Info("routing", "reason", "tool-continuation", "provider", last.Name())
+			return last
+		}
+	}
+
 	// Classifier-based three-level routing: 1=local, 2=primary, 3=reasoner.
 	// ClassifierMinLen > 0: only classify messages longer than threshold.
 	// ClassifierMinLen == 0: always classify (classifier is a free local model).
@@ -422,6 +433,15 @@ func (r *Router) get(key string) Provider {
 		return nil
 	}
 	return r.providers[key]
+}
+
+func (r *Router) keyFor(p Provider) string {
+	for k, v := range r.providers {
+		if v == p {
+			return k
+		}
+	}
+	return ""
 }
 
 // classify calls the classifier provider to rate message complexity.
@@ -497,6 +517,18 @@ func lastUserText(messages []Message) string {
 		}
 	}
 	return ""
+}
+
+func hasToolMessages(messages []Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "tool" || len(messages[i].ToolCalls) > 0 {
+			return true
+		}
+		if messages[i].Role == "user" {
+			return false // only look at recent messages after last user msg
+		}
+	}
+	return false
 }
 
 func supportsVision(p Provider) bool {
