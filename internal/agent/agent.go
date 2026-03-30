@@ -335,6 +335,10 @@ func (a *Agent) ModelOverride() string {
 	return a.router.GetOverride()
 }
 
+func (a *Agent) LastRouted() string {
+	return a.router.LastRouted()
+}
+
 func (a *Agent) ListModels() []string {
 	return a.router.ProviderNames()
 }

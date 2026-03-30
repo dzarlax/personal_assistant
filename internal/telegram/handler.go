@@ -579,9 +579,16 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply b
 				h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
 				statusMsgID = 0
 			}
-			suffix := ""
+			var suffixParts []string
+			if model := h.agent.LastRouted(); model != "" {
+				suffixParts = append(suffixParts, model)
+			}
 			if len(toolsUsed) > 0 {
-				suffix = "\n\n`⚙️ " + strings.Join(toolsUsed, " · ") + "`"
+				suffixParts = append(suffixParts, strings.Join(toolsUsed, " · "))
+			}
+			suffix := ""
+			if len(suffixParts) > 0 {
+				suffix = "\n\n`⚙️ " + strings.Join(suffixParts, " · ") + "`"
 			}
 			finalText := response + suffix
 			htmlText := markdownToTelegramHTML(finalText)
@@ -619,8 +626,15 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply b
 		return
 	}
 
+	var suffixParts []string
+	if model := h.agent.LastRouted(); model != "" {
+		suffixParts = append(suffixParts, model)
+	}
 	if len(toolsUsed) > 0 {
-		response += "\n\n`⚙️ " + strings.Join(toolsUsed, " · ") + "`"
+		suffixParts = append(suffixParts, strings.Join(toolsUsed, " · "))
+	}
+	if len(suffixParts) > 0 {
+		response += "\n\n`⚙️ " + strings.Join(suffixParts, " · ") + "`"
 	}
 
 	h.sendResponse(chatID, response)

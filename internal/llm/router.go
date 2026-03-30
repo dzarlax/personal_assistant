@@ -57,6 +57,7 @@ type Router struct {
 	mu          sync.RWMutex
 	override    string // set via SetOverride; any key in providers, or "" for auto
 	persistPath string // path to save/load routing overrides; empty = no persistence
+	lastRouted  string // name of last provider used (for display)
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
@@ -194,6 +195,9 @@ func (r *Router) SetClassifierMinLen(n int) {
 
 func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
 	provider := r.pick(ctx, messages)
+	r.mu.Lock()
+	r.lastRouted = provider.Name()
+	r.mu.Unlock()
 
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
 	if err != nil && isUnavailable(err) {
@@ -226,6 +230,9 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 // Falls back to wrapping a synchronous Chat() in a single-chunk channel.
 func (r *Router) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
 	provider := r.pick(ctx, messages)
+	r.mu.Lock()
+	r.lastRouted = provider.Name()
+	r.mu.Unlock()
 	if sp, ok := provider.(StreamProvider); ok {
 		ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
 		if err != nil && isUnavailable(err) {
@@ -322,6 +329,13 @@ func (r *Router) GetOverride() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.override
+}
+
+// LastRouted returns the name of the last provider used for a request.
+func (r *Router) LastRouted() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lastRouted
 }
 
 // ProviderNames returns sorted list of all available provider names.
