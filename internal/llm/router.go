@@ -417,7 +417,7 @@ func (r *Router) classify(ctx context.Context, text string) int {
 	if provider == nil {
 		return 2
 	}
-	classifierCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	classifierCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	// Truncate to save tokens — classifier only needs the beginning to judge complexity.
