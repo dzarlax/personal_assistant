@@ -118,7 +118,13 @@ func main() {
 		reasonerKey = "deepseek-r1"
 	}
 
+	localKey := cfg.Routing.Local
+	if localKey == "" {
+		localKey = "ollama-local"
+	}
+
 	router := llm.NewRouter(providers, llm.RouterConfig{
+		Local:            localKey,
 		Primary:          cfg.Routing.Default,
 		Fallback:         cfg.Routing.Fallback,
 		Multimodal:       multimodalKey,
@@ -129,6 +135,7 @@ func main() {
 
 	// Warn about routing roles that reference missing providers
 	for role, model := range map[string]string{
+		"local":      localKey,
 		"fallback":   cfg.Routing.Fallback,
 		"multimodal": multimodalKey,
 		"reasoner":   reasonerKey,

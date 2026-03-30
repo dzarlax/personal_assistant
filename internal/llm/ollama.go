@@ -12,21 +12,21 @@ import (
 	"telegram-agent/internal/config"
 )
 
-const defaultOllamaBaseURL = "https://ollama.com"
+const defaultOllamaBaseURL = "http://localhost:11434"
 
 // ollamaProvider implements the native Ollama /api/chat protocol,
 // which differs from the OpenAI-compatible /v1 endpoint.
-// Used for Ollama Cloud (ollama.com) and local instances.
 type ollamaProvider struct {
 	baseURL   string
 	apiKey    string
 	model     string
 	maxTokens int
 	provName  string
+	vision    bool
 }
 
-// NewOllama creates a provider for an Ollama instance (cloud or local).
-// API key is optional for local Ollama; required for Ollama Cloud.
+// NewOllama creates a provider for a local Ollama instance.
+// API key is optional.
 func NewOllama(cfg config.ModelConfig) (*ollamaProvider, error) {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -42,11 +42,16 @@ func NewOllama(cfg config.ModelConfig) (*ollamaProvider, error) {
 		model:     cfg.Model,
 		maxTokens: maxTokens,
 		provName:  "ollama",
+		vision:    cfg.Vision,
 	}, nil
 }
 
 func (p *ollamaProvider) Name() string {
 	return p.provName + "/" + p.model
+}
+
+func (p *ollamaProvider) SupportsVision() bool {
+	return p.vision
 }
 
 // --- Ollama-native request/response types ---

@@ -12,20 +12,25 @@ import (
 	"time"
 )
 
-const classifierPrompt = `Does this message require deep step-by-step reasoning, mathematical proof, or complex multi-step analysis? Reply with only 'yes' or 'no'.`
+const classifierPrompt = `Rate the complexity of this message. Reply with ONLY a single digit:
+1 — simple question, chitchat, translation, short factual lookup
+2 — moderate task: summarization, code generation, multi-step instructions, analysis
+3 — hard problem: math proof, complex debugging, deep multi-step reasoning, research`
 
 // RouterConfig holds the keys into the providers map for special roles.
 type RouterConfig struct {
-	Primary          string
+	Local            string // level 1: simple tasks (local model)
+	Primary          string // level 2: moderate tasks (cloud model)
+	Reasoner         string // level 3: complex reasoning
 	Fallback         string
 	Multimodal       string
-	Reasoner         string
-	Classifier       string // provider used for reasoning classification; falls back to Primary if empty
+	Classifier       string // provider used for complexity classification
 	ClassifierMinLen int    // min rune length to run classifier; 0 = disabled
 }
 
 // routingOverrides is the persisted subset of RouterConfig (JSON file).
 type routingOverrides struct {
+	Local            string `json:"local,omitempty"`
 	Primary          string `json:"primary,omitempty"`
 	Fallback         string `json:"fallback,omitempty"`
 	Multimodal       string `json:"multimodal,omitempty"`
@@ -84,6 +89,9 @@ func (r *Router) LoadPersistedOverrides() error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if ov.Local != "" {
+		r.cfg.Local = ov.Local
+	}
 	if ov.Primary != "" {
 		r.cfg.Primary = ov.Primary
 	}
@@ -112,6 +120,7 @@ func (r *Router) saveOverrides() {
 	}
 	minLen := r.cfg.ClassifierMinLen
 	ov := routingOverrides{
+		Local:            r.cfg.Local,
 		Primary:          r.cfg.Primary,
 		Fallback:         r.cfg.Fallback,
 		Multimodal:       r.cfg.Multimodal,
@@ -146,6 +155,8 @@ func (r *Router) SetRole(role, model string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch role {
+	case "local":
+		r.cfg.Local = model
 	case "primary":
 		r.cfg.Primary = model
 	case "fallback":
@@ -320,28 +331,49 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	override := r.override
 	r.mu.RUnlock()
 
-	// Multimodal takes priority — only vision-capable models support image parts
-	if p := r.get(cfg.Multimodal); p != nil && hasMultimodalContent(messages) {
-		slog.Info("routing", "reason", "multimodal", "provider", p.Name())
-		return p
-	}
+	multimodal := hasMultimodalContent(messages)
 
 	if override != "" {
 		if p := r.get(override); p != nil {
-			slog.Info("routing", "reason", "override", "provider", p.Name())
+			if !multimodal || supportsVision(p) {
+				slog.Info("routing", "reason", "override", "provider", p.Name())
+				return p
+			}
+			// Override doesn't support vision — fall through to multimodal
+		}
+	}
+
+	// Multimodal routing — use dedicated model only if the active provider can't handle images
+	if multimodal {
+		if p := r.get(cfg.Primary); p != nil && supportsVision(p) {
+			slog.Info("routing", "reason", "primary+vision", "provider", p.Name())
+			return p
+		}
+		if p := r.get(cfg.Multimodal); p != nil {
+			slog.Info("routing", "reason", "multimodal", "provider", p.Name())
 			return p
 		}
 	}
 
-	// Classifier-based routing to reasoner
+	// Classifier-based three-level routing: 1=local, 2=primary, 3=reasoner
 	if cfg.ClassifierMinLen > 0 {
-		if p := r.get(cfg.Reasoner); p != nil {
-			if text := lastUserText(messages); len([]rune(text)) >= cfg.ClassifierMinLen {
-				if r.classify(ctx, text) {
-					slog.Info("routing", "reason", "classifier→reasoner", "provider", p.Name())
+		if text := lastUserText(messages); len([]rune(text)) >= cfg.ClassifierMinLen {
+			level := r.classify(ctx, text)
+			switch level {
+			case 1:
+				if p := r.get(cfg.Local); p != nil {
+					slog.Info("routing", "reason", "classifier→local", "level", 1, "provider", p.Name())
 					return p
 				}
+				// local not configured — fall through to primary
+			case 3:
+				if p := r.get(cfg.Reasoner); p != nil {
+					slog.Info("routing", "reason", "classifier→reasoner", "level", 3, "provider", p.Name())
+					return p
+				}
+				// reasoner not configured — fall through to primary
 			}
+			// level 2 or fallback from 1/3 → use primary
 		}
 	}
 
@@ -363,9 +395,10 @@ func (r *Router) get(key string) Provider {
 	return r.providers[key]
 }
 
-// classify calls the classifier provider (or primary) to determine if the message
-// requires deep reasoning. Returns false on any error.
-func (r *Router) classify(ctx context.Context, text string) bool {
+// classify calls the classifier provider to rate message complexity.
+// Returns 1 (simple/local), 2 (moderate/primary), or 3 (hard/reasoner).
+// Defaults to 2 on any error.
+func (r *Router) classify(ctx context.Context, text string) int {
 	r.mu.RLock()
 	classifierKey := r.cfg.Classifier
 	primaryKey := r.cfg.Primary
@@ -376,7 +409,7 @@ func (r *Router) classify(ctx context.Context, text string) bool {
 	}
 	provider := r.get(classifierKey)
 	if provider == nil {
-		return false
+		return 2
 	}
 	classifierCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -390,15 +423,25 @@ func (r *Router) classify(ctx context.Context, text string) bool {
 	resp, err := provider.Chat(classifierCtx, msgs, classifierPrompt, nil)
 	if err != nil {
 		r.logger.Warn("classifier error, falling back to primary", "classifier", classifierKey, "err", err)
-		return false
+		return 2
 	}
-	result := strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Content)), "yes")
-	if result {
-		r.logger.Info("classifier routed to reasoner", "text_len", len(text))
-	} else {
-		r.logger.Debug("classifier result: primary", "text_len", len(text))
+	answer := strings.TrimSpace(resp.Content)
+	// Extract first digit from response
+	for _, c := range answer {
+		switch c {
+		case '1':
+			r.logger.Info("classifier result", "level", 1, "text_len", len(text))
+			return 1
+		case '2':
+			r.logger.Info("classifier result", "level", 2, "text_len", len(text))
+			return 2
+		case '3':
+			r.logger.Info("classifier result", "level", 3, "text_len", len(text))
+			return 3
+		}
 	}
-	return result
+	r.logger.Warn("classifier returned unexpected response, using primary", "response", answer)
+	return 2
 }
 
 func lastUserText(messages []Message) string {
@@ -417,6 +460,13 @@ func lastUserText(messages []Message) string {
 		}
 	}
 	return ""
+}
+
+func supportsVision(p Provider) bool {
+	if vp, ok := p.(VisionProvider); ok {
+		return vp.SupportsVision()
+	}
+	return false
 }
 
 func hasMultimodalContent(messages []Message) bool {

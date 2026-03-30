@@ -74,3 +74,10 @@ type StreamChunk struct {
 type StreamProvider interface {
 	ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error)
 }
+
+// VisionProvider is an optional interface for providers that support image input.
+// When the active provider (override or primary) implements this, image messages
+// are sent directly to it instead of being routed to the dedicated multimodal model.
+type VisionProvider interface {
+	SupportsVision() bool
+}

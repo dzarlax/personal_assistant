@@ -69,6 +69,7 @@ type ModelConfig struct {
 	APIKey    string `yaml:"api_key"`
 	MaxTokens int    `yaml:"max_tokens"`
 	BaseURL   string `yaml:"base_url"`
+	Vision    bool   `yaml:"vision"` // true if the model supports image input
 }
 
 type ModelsConfig struct {
@@ -88,11 +89,12 @@ type ModelsConfig struct {
 
 
 type RoutingConfig struct {
-	Default             string `yaml:"default"`
+	Local               string `yaml:"local"`                 // level 1: simple tasks (local model)
+	Default             string `yaml:"default"`               // level 2: moderate tasks (cloud model)
 	Fallback            string `yaml:"fallback"`
 	Multimodal          string `yaml:"multimodal"`
-	Reasoner            string `yaml:"reasoner"`
-	Classifier          string `yaml:"classifier"`            // model for reasoning classifier; empty = use primary
+	Reasoner            string `yaml:"reasoner"`              // level 3: complex reasoning
+	Classifier          string `yaml:"classifier"`            // model that rates complexity 1/2/3
 	CompactionModel     string `yaml:"compaction_model"`
 	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = disabled
 }

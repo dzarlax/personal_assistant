@@ -77,10 +77,12 @@ models:
     max_tokens: 64
 
   # Ollama local — larger local model, can be used as primary via /model.
+  # qwen3.5:4b supports tools and vision.
   ollama-local:
-    model: gemma3:4b
+    model: qwen3.5:4b
     base_url: http://host.docker.internal:11434
     max_tokens: 4096
+    vision: true
 
   # Claude via bridge (host service wrapping `claude -p` CLI).
   # Requires claude-bridge running on host:9900.
@@ -91,12 +93,13 @@ models:
     max_tokens: 120
 
 routing:
-  default: deepseek
+  local: ollama-local          # level 1: simple tasks → local qwen3.5:4b
+  default: deepseek            # level 2: moderate tasks → cloud DeepSeek
+  reasoner: claude             # level 3: complex reasoning → Claude
   fallback: gemini-flash-lite
-  multimodal: gemini-flash
-  reasoner: claude
+  multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)
   compaction_model: deepseek
-  classifier: ollama
+  classifier: ollama           # gemma3:1b rates complexity 1/2/3
   classifier_min_length: 100
 
 tool_filter:

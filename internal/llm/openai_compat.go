@@ -202,6 +202,10 @@ func (p *openAICompatProvider) Name() string {
 	return p.provName + "/" + p.model
 }
 
+func (p *openAICompatProvider) SupportsVision() bool {
+	return p.vision
+}
+
 // buildMessages converts internal messages to raw JSON messages.
 // Assistant messages with tool_calls and empty content use null (not omitted).
 func buildMessages(messages []Message, systemPrompt string, vision bool) []rawMessage {
