@@ -69,13 +69,18 @@ models:
     max_tokens: 8192
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
-  # Local model via llama.cpp server (OpenAI-compatible API).
-  # Used as classifier for routing decisions. No API key needed.
-  local:
-    provider: local
-    model: gemma-3n-E2B
+  # Ollama (local) — classifier and optional primary model.
+  # Runs natively on host, accessed via host.docker.internal.
+  ollama:
+    model: gemma3:1b
+    base_url: http://host.docker.internal:11434
     max_tokens: 64
-    base_url: http://classifier:8080/v1
+
+  # Ollama 4b — larger local model, can be used as primary via /model.
+  ollama-4b:
+    model: gemma3:4b
+    base_url: http://host.docker.internal:11434
+    max_tokens: 4096
 
   # Claude via bridge (host service wrapping `claude -p` CLI).
   # Requires claude-bridge running on host:9900.
@@ -91,7 +96,7 @@ routing:
   multimodal: gemini-flash
   reasoner: claude
   compaction_model: deepseek
-  classifier: local
+  classifier: ollama
   classifier_min_length: 100
 
 tool_filter:
