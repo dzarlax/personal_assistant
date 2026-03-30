@@ -69,20 +69,17 @@ models:
     max_tokens: 8192
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
-  # Ollama (local) — classifier and optional primary model.
-  # Runs natively on host, accessed via host.docker.internal.
+  # Ollama — classifier model (gemma3:1b). No tools needed for classification.
   ollama:
     model: gemma3:1b
     base_url: http://host.docker.internal:11434
     max_tokens: 64
 
-  # Ollama local — larger local model, can be used as primary via /model.
-  # qwen3.5:4b supports tools and vision.
+  # Ollama local — local model for simple tasks. Supports tools.
   ollama-local:
-    model: qwen3.5:4b
+    model: qwen3:0.6b
     base_url: http://host.docker.internal:11434
     max_tokens: 4096
-    vision: true
 
   # Claude via bridge (host service wrapping `claude -p` CLI).
   # Requires claude-bridge running on host:9900.
