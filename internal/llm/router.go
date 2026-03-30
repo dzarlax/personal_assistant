@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const classifierPrompt = `You are a classifier. Output ONLY a single digit 1, 2, or 3.
+const defaultClassifierPrompt = `You are a classifier. Output ONLY a single digit 1, 2, or 3.
 
 1 = simple (greeting, chitchat, factual lookup, translation)
 2 = moderate (summarization, code, analysis, multi-step)
@@ -34,6 +34,7 @@ type RouterConfig struct {
 	Classifier        string // provider used for complexity classification
 	ClassifierMinLen  int    // min rune length to run classifier; 0 = always; <0 = disabled
 	ClassifierTimeout int    // seconds; default 15
+	ClassifierPrompt  string // system prompt for classifier; uses default if empty
 }
 
 // routingOverrides is the persisted subset of RouterConfig (JSON file).
@@ -437,8 +438,12 @@ func (r *Router) classify(ctx context.Context, text string) int {
 	if len([]rune(classifierText)) > 500 {
 		classifierText = string([]rune(classifierText)[:500])
 	}
+	prompt := r.cfg.ClassifierPrompt
+	if prompt == "" {
+		prompt = defaultClassifierPrompt
+	}
 	msgs := []Message{{Role: "user", Content: classifierText}}
-	resp, err := provider.Chat(classifierCtx, msgs, classifierPrompt, nil)
+	resp, err := provider.Chat(classifierCtx, msgs, prompt, nil)
 	if err != nil {
 		r.logger.Warn("classifier error, falling back to primary", "classifier", classifierKey, "err", err)
 		return 2

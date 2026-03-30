@@ -132,6 +132,7 @@ func main() {
 		Classifier:        cfg.Routing.Classifier,
 		ClassifierMinLen:  cfg.Routing.ClassifierMinLength,
 		ClassifierTimeout: cfg.Routing.ClassifierTimeout,
+		ClassifierPrompt:  cfg.Routing.ClassifierPrompt,
 	})
 
 	// Warn about routing roles that reference missing providers
