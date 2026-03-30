@@ -76,8 +76,8 @@ models:
     base_url: http://host.docker.internal:11434
     max_tokens: 64
 
-  # Ollama 4b — larger local model, can be used as primary via /model.
-  ollama-4b:
+  # Ollama local — larger local model, can be used as primary via /model.
+  ollama-local:
     model: gemma3:4b
     base_url: http://host.docker.internal:11434
     max_tokens: 4096

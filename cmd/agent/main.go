@@ -88,9 +88,9 @@ func main() {
 		p, e := llm.NewOllama(cfg.Models.Ollama)
 		addProvider("ollama", p, e)
 	}
-	if cfg.Models.Ollama4b.Model != "" {
-		p, e := llm.NewOllama(cfg.Models.Ollama4b)
-		addProvider("ollama-4b", p, e)
+	if cfg.Models.OllamaLocal.Model != "" {
+		p, e := llm.NewOllama(cfg.Models.OllamaLocal)
+		addProvider("ollama-local", p, e)
 	}
 	if cfg.Models.Claude.BaseURL != "" {
 		p, e := llm.NewClaudeBridge(cfg.Models.Claude)
