@@ -76,9 +76,9 @@ models:
     max_tokens: 64
     no_think: true
 
-  # Ollama Cloud — Qwen 3.5 via Ollama Cloud API.
+  # Ollama Cloud — model configurable via OLLAMA_MODEL env var.
   ollama-cloud:
-    model: qwen3.5:397b-cloud
+    model: ${OLLAMA_MODEL:-qwen3.5:397b-cloud}
     base_url: https://api.ollama.com
     api_key: ${OLLAMA_API_KEY}
     max_tokens: 4096

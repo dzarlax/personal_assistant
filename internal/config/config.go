@@ -4,9 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// expandEnvWithDefaults expands ${VAR} and ${VAR:-default} in s.
+func expandEnvWithDefaults(s string) string {
+	return os.Expand(s, func(key string) string {
+		if name, def, ok := strings.Cut(key, ":-"); ok {
+			if v := os.Getenv(name); v != "" {
+				return v
+			}
+			return def
+		}
+		return os.Getenv(key)
+	})
+}
 
 type Config struct {
 	Telegram   TelegramConfig   `yaml:"telegram"`
@@ -113,7 +127,7 @@ func LoadMCPServers(path string) (map[string]MCPServerConfig, error) {
 		return nil, fmt.Errorf("read mcp config: %w", err)
 	}
 
-	expanded := os.ExpandEnv(string(data))
+	expanded := expandEnvWithDefaults(string(data))
 
 	var wrapper struct {
 		MCPServers map[string]MCPServerConfig `json:"mcpServers"`
@@ -131,7 +145,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	expanded := os.ExpandEnv(string(data))
+	expanded := expandEnvWithDefaults(string(data))
 
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {

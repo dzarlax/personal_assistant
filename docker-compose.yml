@@ -13,6 +13,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - QWEN_API_KEY=${QWEN_API_KEY:-}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
       - EMBED_API_KEY=${EMBED_API_KEY:-}
       - CLAUDE_BRIDGE_TOKEN=${CLAUDE_BRIDGE_TOKEN:-}
       - TZ=${TZ:-Europe/Belgrade}
