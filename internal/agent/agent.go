@@ -363,6 +363,16 @@ func (a *Agent) SetClassifierMinLen(n int) {
 	a.router.SetClassifierMinLen(n)
 }
 
+// SetOllamaCloudModel changes the model on the Ollama Cloud provider and persists.
+func (a *Agent) SetOllamaCloudModel(model string, vision bool) bool {
+	return a.router.SetOllamaCloudModel(model, vision)
+}
+
+// OllamaCloudModelName returns the current Ollama Cloud model name, or ("", false).
+func (a *Agent) OllamaCloudModelName() (string, bool) {
+	return a.router.OllamaCloudModelName()
+}
+
 type ToolInfo struct {
 	Name       string
 	ServerName string
