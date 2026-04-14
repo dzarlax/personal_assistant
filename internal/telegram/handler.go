@@ -760,7 +760,12 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 			if mode == "" {
 				mode = "auto"
 			}
-			h.send(chatID, fmt.Sprintf("Model: `%s` \\(override: %s\\)\n\n/model list — available models", h.agent.ModelName(), escapeMarkdown(mode)))
+			modelDisplay := h.agent.ModelName()
+			// If override is a dynamic ollama cloud key, show it more clearly.
+			if strings.HasPrefix(override, "ollama-cloud:") {
+				modelDisplay = "ollama/" + strings.TrimPrefix(override, "ollama-cloud:")
+			}
+			h.send(chatID, fmt.Sprintf("Model: `%s` \\(override: %s\\)\n\n/model list — available models", escapeMarkdown(modelDisplay), escapeMarkdown(mode)))
 		case "list":
 			names := h.agent.ListModels()
 			var sb strings.Builder
@@ -769,6 +774,32 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				sb.WriteString("  `" + escapeMarkdown(n) + "`\n")
 			}
 			sb.WriteString("\nUse `/model <name>` to switch\\.")
+
+			// Append Ollama Cloud section if an Ollama Cloud provider is configured.
+			if _, _, _, ok := h.agent.OllamaCloudBaseConfig(); ok {
+				cloudModels, err := llm.FetchOllamaCloudModels()
+				if err != nil {
+					h.logger.Warn("failed to fetch Ollama Cloud models", "err", err)
+				}
+				if len(cloudModels) > 0 {
+					sb.WriteString("\n\n*Ollama Cloud:*")
+					msg := tgbotapi.NewMessage(chatID, sb.String())
+					msg.ParseMode = tgbotapi.ModeMarkdownV2
+					var rows [][]tgbotapi.InlineKeyboardButton
+					var row []tgbotapi.InlineKeyboardButton
+					for i, m := range cloudModels {
+						row = append(row, tgbotapi.NewInlineKeyboardButtonData(m, "model_ollama_cloud:"+m))
+						if len(row) == 3 || i == len(cloudModels)-1 {
+							rows = append(rows, row)
+							row = nil
+						}
+					}
+					kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+					msg.ReplyMarkup = kb
+					h.bot.Send(msg) //nolint:errcheck
+					return
+				}
+			}
 			h.send(chatID, sb.String())
 		case "default", "reset":
 			h.agent.SetModel("") //nolint:errcheck
@@ -1238,6 +1269,35 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 		h.agent.SetClassifierMinLen(n)
 		cfg := h.agent.GetRouting()
 		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+
+	case strings.HasPrefix(data, "model_ollama_cloud:"):
+		modelName := strings.TrimPrefix(data, "model_ollama_cloud:")
+		baseURL, apiKey, maxTokens, ok := h.agent.OllamaCloudBaseConfig()
+		if !ok {
+			h.sendPlain(chatID, "No Ollama Cloud provider configured.")
+			return
+		}
+		p, err := llm.NewOllama(config.ModelConfig{
+			Model:     modelName,
+			BaseURL:   baseURL,
+			APIKey:    apiKey,
+			MaxTokens: maxTokens,
+			Vision:    true,
+		})
+		if err != nil {
+			h.logger.Warn("failed to create Ollama Cloud provider", "model", modelName, "err", err)
+			h.sendPlain(chatID, "Error creating provider: "+err.Error())
+			return
+		}
+		key := "ollama-cloud:" + modelName
+		h.agent.AddModel(key, p)
+		if err := h.agent.SetModel(key); err != nil {
+			h.logger.Warn("failed to set Ollama Cloud model", "model", modelName, "err", err)
+			h.sendPlain(chatID, "Error switching model: "+err.Error())
+			return
+		}
+		h.logger.Info("switched to Ollama Cloud model", "model", modelName)
+		h.send(chatID, fmt.Sprintf("Switched to ollama cloud: `%s`", escapeMarkdown(modelName)))
 	}
 }
 

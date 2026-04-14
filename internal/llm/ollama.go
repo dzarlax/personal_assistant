@@ -7,10 +7,62 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"telegram-agent/internal/config"
 )
+
+// --- Ollama Cloud model discovery ---
+
+var (
+	cloudModelsCache    []string
+	cloudModelsCachedAt time.Time
+	cloudModelsMu       sync.Mutex
+	cloudModelsTTL      = 24 * time.Hour
+)
+
+// FetchOllamaCloudModels fetches the list of cloud-available models from ollama.com.
+// Results are cached in memory for 24 hours.
+func FetchOllamaCloudModels() ([]string, error) {
+	cloudModelsMu.Lock()
+	defer cloudModelsMu.Unlock()
+
+	if time.Since(cloudModelsCachedAt) < cloudModelsTTL && len(cloudModelsCache) > 0 {
+		return cloudModelsCache, nil
+	}
+
+	resp, err := http.Get("https://ollama.com/search?c=cloud")
+	if err != nil {
+		return cloudModelsCache, fmt.Errorf("fetch ollama cloud models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return cloudModelsCache, fmt.Errorf("read ollama cloud response: %w", err)
+	}
+
+	re := regexp.MustCompile(`<h2>([^<]+)</h2>`)
+	matches := re.FindAllStringSubmatch(string(body), -1)
+
+	var models []string
+	for _, m := range matches {
+		name := strings.TrimSpace(m[1])
+		// Model names are like "qwen3.5", "glm-5.1" — no spaces.
+		if name != "" && !strings.Contains(name, " ") {
+			models = append(models, name)
+		}
+	}
+
+	if len(models) > 0 {
+		cloudModelsCache = models
+		cloudModelsCachedAt = time.Now()
+	}
+	return models, nil
+}
 
 const defaultOllamaBaseURL = "http://localhost:11434"
 
@@ -54,6 +106,12 @@ func (p *ollamaProvider) Name() string {
 
 func (p *ollamaProvider) SupportsVision() bool {
 	return p.vision
+}
+
+// OllamaBaseConfig returns the base configuration of this Ollama provider,
+// suitable for creating dynamic providers with different model names.
+func (p *ollamaProvider) OllamaBaseConfig() (baseURL, apiKey string, maxTokens int) {
+	return p.baseURL, p.apiKey, p.maxTokens
 }
 
 // --- Ollama-native request/response types ---

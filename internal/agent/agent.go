@@ -363,6 +363,17 @@ func (a *Agent) SetClassifierMinLen(n int) {
 	a.router.SetClassifierMinLen(n)
 }
 
+// AddModel registers a dynamic provider at runtime and returns its key.
+func (a *Agent) AddModel(key string, p llm.Provider) {
+	a.router.AddProvider(key, p)
+}
+
+// OllamaCloudBaseConfig returns the base URL, API key, and max tokens
+// of the first Ollama Cloud provider, if any is configured.
+func (a *Agent) OllamaCloudBaseConfig() (baseURL, apiKey string, maxTokens int, found bool) {
+	return a.router.FindOllamaCloudConfig()
+}
+
 type ToolInfo struct {
 	Name       string
 	ServerName string

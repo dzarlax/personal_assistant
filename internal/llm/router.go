@@ -351,6 +351,32 @@ func (r *Router) ProviderNames() []string {
 	return names
 }
 
+// AddProvider registers a new provider at runtime (e.g. dynamic Ollama Cloud models).
+func (r *Router) AddProvider(key string, p Provider) {
+	r.mu.Lock()
+	r.providers[key] = p
+	r.mu.Unlock()
+}
+
+// OllamaCloudConfigProvider is implemented by Ollama providers to expose their base config.
+type OllamaCloudConfigProvider interface {
+	OllamaBaseConfig() (baseURL, apiKey string, maxTokens int)
+}
+
+// FindOllamaCloudConfig searches providers for the first one whose base URL points
+// to Ollama Cloud (api.ollama.com). Returns the base config for creating dynamic providers.
+func (r *Router) FindOllamaCloudConfig() (baseURL, apiKey string, maxTokens int, found bool) {
+	for _, p := range r.providers {
+		if ocp, ok := p.(OllamaCloudConfigProvider); ok {
+			bu, ak, mt := ocp.OllamaBaseConfig()
+			if strings.Contains(bu, "ollama.com") {
+				return bu, ak, mt, true
+			}
+		}
+	}
+	return "", "", 0, false
+}
+
 func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	r.mu.RLock()
 	cfg := r.cfg
