@@ -169,6 +169,7 @@ type ollamaProvider struct {
 	provName  string
 	vision    bool
 	noThink   bool
+	keepAlive int // seconds; -1 = keep forever; 0 = provider default
 }
 
 // NewOllama creates a provider for a local Ollama instance.
@@ -190,6 +191,7 @@ func NewOllama(cfg config.ModelConfig) (*ollamaProvider, error) {
 		provName:  "ollama",
 		vision:    cfg.Vision,
 		noThink:   cfg.NoThink,
+		keepAlive: cfg.KeepAlive,
 	}, nil
 }
 
@@ -220,12 +222,13 @@ func (p *ollamaProvider) OllamaCloudModel() (string, bool) {
 // --- Ollama-native request/response types ---
 
 type ollamaRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Think    *bool           `json:"think,omitempty"`
-	Tools    []ollamaTool    `json:"tools,omitempty"`
-	Options  *ollamaOptions  `json:"options,omitempty"`
+	Model     string          `json:"model"`
+	Messages  []ollamaMessage `json:"messages"`
+	Stream    bool            `json:"stream"`
+	Think     *bool           `json:"think,omitempty"`
+	Tools     []ollamaTool    `json:"tools,omitempty"`
+	Options   *ollamaOptions  `json:"options,omitempty"`
+	KeepAlive *int            `json:"keep_alive,omitempty"` // seconds; -1 = forever
 }
 
 type ollamaMessage struct {
@@ -280,6 +283,10 @@ func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPro
 	if p.noThink {
 		f := false
 		req.Think = &f
+	}
+	if p.keepAlive != 0 {
+		ka := p.keepAlive
+		req.KeepAlive = &ka
 	}
 	if len(tools) > 0 {
 		req.Tools = buildOllamaTools(tools)
