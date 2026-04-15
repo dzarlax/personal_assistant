@@ -537,7 +537,13 @@ func (r *Router) classify(ctx context.Context, text string) int {
 		prompt = defaultClassifierPrompt
 	}
 	msgs := []Message{{Role: "user", Content: classifierText}}
+	classifyStart := time.Now()
 	resp, err := provider.Chat(classifierCtx, msgs, prompt, nil)
+	classifyDur := time.Since(classifyStart)
+	if t := timingsFrom(ctx); t != nil {
+		t.ClassifyDur = classifyDur
+		t.ClassifyRan = true
+	}
 	if err != nil {
 		r.logger.Warn("classifier error, falling back to primary", "classifier", classifierKey, "err", err)
 		return 2

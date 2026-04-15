@@ -36,6 +36,11 @@ func (t *requestTrace) begin(name string) func() {
 	}
 }
 
+// addSpan records a pre-measured span (e.g. extracted from context timings).
+func (t *requestTrace) addSpan(name string, dur time.Duration) {
+	t.spans = append(t.spans, traceSpan{name: name, dur: dur})
+}
+
 // log emits a single structured log line with all span durations in milliseconds.
 func (t *requestTrace) log(logger *slog.Logger, chatID int64, status string) {
 	args := make([]any, 0, 3+len(t.spans)*2)

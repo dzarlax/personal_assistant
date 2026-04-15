@@ -164,9 +164,16 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
 
-		endLLM := tr.begin(fmt.Sprintf("iter%d_llm", i))
-		resp, err := a.router.Chat(ctx, history, sysPrompt, tools)
-		endLLM()
+		iterCtx, timing := llm.WithTimings(ctx)
+		llmStart := time.Now()
+		resp, err := a.router.Chat(iterCtx, history, sysPrompt, tools)
+		llmTotal := time.Since(llmStart)
+		if timing.ClassifyRan {
+			tr.addSpan(fmt.Sprintf("iter%d_classify", i), timing.ClassifyDur)
+			tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal-timing.ClassifyDur)
+		} else {
+			tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal)
+		}
 		if err != nil {
 			tr.log(a.logger, chatID, "llm_error")
 			return "", fmt.Errorf("llm: %w", err)
@@ -256,10 +263,17 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
 
-		endLLM := tr.begin(fmt.Sprintf("iter%d_llm", i))
-		ch, err := a.router.ChatStream(ctx, history, sysPrompt, tools)
+		iterCtx, timing := llm.WithTimings(ctx)
+		llmStart := time.Now()
+		ch, err := a.router.ChatStream(iterCtx, history, sysPrompt, tools)
 		if err != nil {
-			endLLM()
+			llmTotal := time.Since(llmStart)
+			if timing.ClassifyRan {
+				tr.addSpan(fmt.Sprintf("iter%d_classify", i), timing.ClassifyDur)
+				tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal-timing.ClassifyDur)
+			} else {
+				tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal)
+			}
 			tr.log(a.logger, chatID, "llm_error")
 			return "", fmt.Errorf("llm: %w", err)
 		}
@@ -270,7 +284,13 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 
 		for chunk := range ch {
 			if chunk.Err != nil {
-				endLLM()
+				llmTotal := time.Since(llmStart)
+				if timing.ClassifyRan {
+					tr.addSpan(fmt.Sprintf("iter%d_classify", i), timing.ClassifyDur)
+					tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal-timing.ClassifyDur)
+				} else {
+					tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal)
+				}
 				tr.log(a.logger, chatID, "stream_error")
 				return "", fmt.Errorf("llm stream: %w", chunk.Err)
 			}
@@ -287,7 +307,13 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 				}
 			}
 		}
-		endLLM()
+		llmTotal := time.Since(llmStart)
+		if timing.ClassifyRan {
+			tr.addSpan(fmt.Sprintf("iter%d_classify", i), timing.ClassifyDur)
+			tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal-timing.ClassifyDur)
+		} else {
+			tr.addSpan(fmt.Sprintf("iter%d_llm", i), llmTotal)
+		}
 
 		if len(toolCalls) == 0 {
 			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
