@@ -259,6 +259,22 @@ Persistence: the SQLite and Postgres stores each implement `llm.CapabilityStore`
 
 Admin UI flow (Phase 2, not built yet): `Router.SetProviderModel(slot, modelID, caps)` → the router type-asserts `providers[slot]` to `ConfigurableProvider`, calls `SetModel`, then `saveOverrides()` writes the current OR model per slot into the settings store under `openrouter_models: {slot: model_id}`. On startup, `Router.TakePendingOpenRouterOverrides()` returns the loaded map which `applyOpenRouterOverrides` in main.go re-applies with caps from the capability store. Unknown model ids persist with zero caps (safer default — vision-aware routing treats them as text-only).
 
+### OpenRouter slots — one per role
+
+The deploy config provisions four OR-backed model slots (`simple-or`, `default-or`, `complex-or`, `compaction-or`), each with its own `model:` id. Routing roles point at them 1:1 (simple→simple-or, default→default-or, complex→claude-bridge by default but can switch to complex-or, compaction→compaction-or). Admin UI reassigns each slot's model id independently without side effects on the others. A single shared OR slot (the old `workhorse` pattern) would change all three roles at once — that's why it was split.
+
+### Admin UI Suggest engine (`internal/adminapi/recommend.go`)
+
+Role-specific presets apply transparent include/exclude filters + a sort strategy to the capability cache. No opaque quality score, no curated shortlist.
+
+Notable gotcha: OpenRouter's `reasoning: true` capability flag is set on every model whose API accepts a reasoning parameter — including 8B models that aren't frontier reasoners. The `complex` preset therefore also requires the model id to match `thinkingRegex` (`-thinking`, `:thinking`, `/qwq`, `/deepseek-r<n>`, `-r1-`, `-reasoner`) so Suggest returns actual thinking variants only.
+
+The `compaction` preset sorts by **completion price**, not prompt price — summaries are output-heavy, so the prompt-price ranking misrepresents the real cost driver.
+
+The `fallback` role intentionally has no preset: it should point at a DIRECT-provider slot (Gemini in our config) to survive an OpenRouter outage. Browsing OR candidates for it would be misleading.
+
+The multilingual allowlist is a static regex over provider/model prefixes with proven Russian support (Qwen3, Qwen Plus/Max/Turbo, GLM 4.5+, Kimi, Gemini 2.5/3.x, Mistral Large/Medium, Grok 3/4, DeepSeek); English-primary small models (nvidia/, cohere-r-small) and -coder / -vl fine-tunes are excluded from general roles.
+
 ### Admin web UI (`internal/adminapi`)
 
 Optional HTTP server on `:8087` (via `AdminAPIConfig`) serving a single-page htmx-driven UI for browsing OpenRouter models and editing routing. Wired from `main.go` only when `cfg.AdminAPI.Enabled`. Shares the router and `CapabilityStore` with the rest of the bot — no separate process.

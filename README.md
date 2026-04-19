@@ -168,28 +168,34 @@ telegram:
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
 models:
-  # --- OpenRouter — one API key, many models. Add as many slots as you need. ---
-  workhorse:
+  # --- OpenRouter slots — one per routing role so the admin UI can reassign
+  #     each independently without affecting the others. The initial model
+  #     ids below are starting points; change them via the web admin's
+  #     "Suggest" button (filters the catalog by role-appropriate criteria). ---
+  simple-or:
     provider: openrouter
-    model: ${OPENROUTER_MODEL:-deepseek/deepseek-chat-v3.1}
+    model: qwen/qwen3.5-flash-02-23              # V T R, 1M ctx, $0.065/$0.26
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 2048
+    base_url: https://openrouter.ai/api/v1
+  default-or:
+    provider: openrouter
+    model: qwen/qwen3.5-flash-02-23              # same initial; diverge in UI
     api_key: ${OPENROUTER_API_KEY}
     max_tokens: 4096
     base_url: https://openrouter.ai/api/v1
-    vision: true   # overridden by capabilities fetched from /api/v1/models
-
-  # Dedicate a separate OpenRouter slot per routing role if you want different models.
-  # complex-or:
-  #   provider: openrouter
-  #   model: anthropic/claude-sonnet-4.5
-  #   api_key: ${OPENROUTER_API_KEY}
-  #   max_tokens: 8192
-  #   base_url: https://openrouter.ai/api/v1
-  # cheap-or:
-  #   provider: openrouter
-  #   model: google/gemini-2.5-flash-lite
-  #   api_key: ${OPENROUTER_API_KEY}
-  #   max_tokens: 2048
-  #   base_url: https://openrouter.ai/api/v1
+  complex-or:                                    # OR reasoner for when no bridge
+    provider: openrouter
+    model: qwen/qwen3-235b-a22b-thinking-2507    # thinking variant, $0.13/$0.60
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 8192
+    base_url: https://openrouter.ai/api/v1
+  compaction-or:
+    provider: openrouter
+    model: qwen/qwen3.5-9b                       # 262k ctx, $0.10/$0.15
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 2048
+    base_url: https://openrouter.ai/api/v1
 
   # --- Gemini (direct Google API) — fallback + multimodal/voice-transcription. ---
   gemini-flash-lite:
@@ -234,14 +240,14 @@ models:
   #   base_url: http://classifier:8080/v1
 
 routing:
-  simple: workhorse            # level 1: simple/cheap tasks
-  default: workhorse           # level 2: moderate tasks (agentic loop)
-  complex: workhorse           # level 3: complex reasoning (use `claude-bridge` or a dedicated OR slot)
-  fallback: gemini-flash-lite
-  multimodal: gemini-flash     # vision/audio — also used for voice transcription
-  compaction: workhorse
-  classifier: classifier       # rates complexity 1/2/3
-  classifier_min_length: 0     # 0 = always; >0 = min chars; <0 = disabled
+  simple:     simple-or          # level 1: simple/cheap tasks
+  default:    default-or         # level 2: moderate tasks (agentic loop)
+  complex:    claude-bridge      # level 3: Claude via bridge; swap to complex-or without bridge
+  compaction: compaction-or
+  fallback:   gemini-flash-lite  # direct Google — different vendor survives OR outage
+  multimodal: gemini-flash       # direct Google — native input_audio for voice
+  classifier: classifier         # local Ollama rates complexity 1/2/3
+  classifier_min_length: 0       # 0 = always; >0 = min chars; <0 = disabled
 
 tool_filter:
   top_k: 20   # top-K MCP tools selected per request via vector similarity; 0 = disabled
@@ -636,7 +642,7 @@ flowchart TD
     CapStore[("model_capabilities\n+ kv_settings\n(persistent routing)")]
 
     subgraph LLMs ["LLM Providers"]
-        OR["openrouter (workhorse)"]
+        OR["openrouter slots (simple-or, default-or, complex-or, compaction-or)"]
         ORx["openrouter (complex-or, ...)"]
         GM["gemini-flash-lite / gemini-flash"]
         OLC["ollama (classifier, local)"]
