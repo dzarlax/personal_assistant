@@ -44,7 +44,7 @@ func newTestRouter(cfg RouterConfig, providers map[string]Provider) *Router {
 // TestRouter_UsesPrimary: обычное сообщение → primary провайдер.
 func TestRouter_UsesPrimary(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "hello"}}
-	r := newTestRouter(RouterConfig{Primary: "primary"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary"}, map[string]Provider{
 		"primary": primary,
 	})
 
@@ -65,7 +65,7 @@ func TestRouter_FallbackOn5xx(t *testing.T) {
 	primary := &mockProvider{name: "primary", err: &APIError{StatusCode: 500, Message: "server error"}}
 	fallback := &mockProvider{name: "fallback", resp: Response{Content: "fallback reply"}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary", Fallback: "fallback"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary", Fallback: "fallback"}, map[string]Provider{
 		"primary":  primary,
 		"fallback": fallback,
 	})
@@ -84,7 +84,7 @@ func TestRouter_FallbackOn429(t *testing.T) {
 	primary := &mockProvider{name: "primary", err: &APIError{StatusCode: 429, Message: "rate limited"}}
 	fallback := &mockProvider{name: "fallback", resp: Response{Content: "ok"}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary", Fallback: "fallback"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary", Fallback: "fallback"}, map[string]Provider{
 		"primary":  primary,
 		"fallback": fallback,
 	})
@@ -103,7 +103,7 @@ func TestRouter_NoFallbackOn4xx(t *testing.T) {
 	primary := &mockProvider{name: "primary", err: &APIError{StatusCode: 400, Message: "bad request"}}
 	fallback := &mockProvider{name: "fallback", resp: Response{Content: "ok"}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary", Fallback: "fallback"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary", Fallback: "fallback"}, map[string]Provider{
 		"primary":  primary,
 		"fallback": fallback,
 	})
@@ -122,7 +122,7 @@ func TestRouter_MultimodalPriority(t *testing.T) {
 	primary := &mockProvider{name: "primary"}
 	multimodal := &mockProvider{name: "multimodal", resp: Response{Content: "image described"}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary", Multimodal: "multimodal"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary", Multimodal: "multimodal"}, map[string]Provider{
 		"primary":   primary,
 		"multimodal": multimodal,
 	})
@@ -156,8 +156,8 @@ func TestRouter_ClassifierLevel3(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "simple answer"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
-		Reasoner:         "reasoner",
+		Default:          "primary",
+		Complex:          "reasoner",
 		Classifier:       "classifier",
 		ClassifierMinLen: 10,
 	}, map[string]Provider{
@@ -183,8 +183,8 @@ func TestRouter_ClassifierLevel1(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud answer"}}
 
 	r := newTestRouter(RouterConfig{
-		Local:            "local",
-		Primary:          "primary",
+		Simple:           "local",
+		Default:          "primary",
 		Classifier:       "classifier",
 		ClassifierMinLen: 5,
 	}, map[string]Provider{
@@ -209,8 +209,8 @@ func TestRouter_ClassifierLevel2(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud answer"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
-		Reasoner:         "reasoner",
+		Default:          "primary",
+		Complex:          "reasoner",
 		Classifier:       "classifier",
 		ClassifierMinLen: 5,
 	}, map[string]Provider{
@@ -237,7 +237,7 @@ func TestRouter_ClassifierSkippedForShortMessages(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "ok"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
+		Default:          "primary",
 		Classifier:       "classifier",
 		ClassifierMinLen: 100, // порог 100 символов
 	}, map[string]Provider{
@@ -260,7 +260,7 @@ func TestRouter_ClassifierDisabled(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "ok"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
+		Default:          "primary",
 		Classifier:       "classifier",
 		ClassifierMinLen: -1, // отключён
 	}, map[string]Provider{
@@ -281,8 +281,8 @@ func TestRouter_ClassifierAlwaysWhenZero(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud"}}
 
 	r := newTestRouter(RouterConfig{
-		Local:            "local",
-		Primary:          "primary",
+		Simple:           "local",
+		Default:          "primary",
 		Classifier:       "classifier",
 		ClassifierMinLen: 0, // всегда классифицировать
 	}, map[string]Provider{
@@ -307,8 +307,8 @@ func TestRouter_ClassifierErrorFallsBackToPrimary(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "primary answer"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
-		Reasoner:         "reasoner",
+		Default:          "primary",
+		Complex:          "reasoner",
 		Classifier:       "classifier",
 		ClassifierMinLen: 5,
 	}, map[string]Provider{
@@ -338,7 +338,7 @@ func TestRouter_ClassifierTimeout(t *testing.T) {
 	primary := &mockProvider{name: "primary", resp: Response{Content: "primary"}}
 
 	r := newTestRouter(RouterConfig{
-		Primary:          "primary",
+		Default:          "primary",
 		Classifier:       "classifier",
 		ClassifierMinLen: 5,
 	}, map[string]Provider{
@@ -367,7 +367,7 @@ func TestRouter_Override(t *testing.T) {
 	primary := &mockProvider{name: "primary"}
 	special := &mockProvider{name: "special", resp: Response{Content: "special"}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary"}, map[string]Provider{
 		"primary": primary,
 		"special": special,
 	})
@@ -390,7 +390,7 @@ func TestRouter_Override(t *testing.T) {
 
 // TestRouter_UnknownOverride: SetOverride с несуществующим именем → ошибка.
 func TestRouter_UnknownOverride(t *testing.T) {
-	r := newTestRouter(RouterConfig{Primary: "primary"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary"}, map[string]Provider{
 		"primary": &mockProvider{name: "primary"},
 	})
 
@@ -404,7 +404,7 @@ func TestRouter_FallbackCalledOnce(t *testing.T) {
 	primary := &mockProvider{name: "primary", err: &APIError{StatusCode: 503}}
 	fallback := &mockProvider{name: "fallback", err: &APIError{StatusCode: 503}}
 
-	r := newTestRouter(RouterConfig{Primary: "primary", Fallback: "fallback"}, map[string]Provider{
+	r := newTestRouter(RouterConfig{Default: "primary", Fallback: "fallback"}, map[string]Provider{
 		"primary":  primary,
 		"fallback": fallback,
 	})

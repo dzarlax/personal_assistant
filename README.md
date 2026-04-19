@@ -178,7 +178,7 @@ models:
     vision: true   # overridden by capabilities fetched from /api/v1/models
 
   # Dedicate a separate OpenRouter slot per routing role if you want different models.
-  # reasoner-or:
+  # complex-or:
   #   provider: openrouter
   #   model: anthropic/claude-sonnet-4.5
   #   api_key: ${OPENROUTER_API_KEY}
@@ -234,12 +234,12 @@ models:
   #   base_url: http://classifier:8080/v1
 
 routing:
-  local: workhorse             # level 1: simple tasks
+  simple: workhorse            # level 1: simple/cheap tasks
   default: workhorse           # level 2: moderate tasks (agentic loop)
-  reasoner: workhorse          # level 3: complex reasoning (use `claude-bridge` or `reasoner-or` if configured)
+  complex: workhorse           # level 3: complex reasoning (use `claude-bridge` or a dedicated OR slot)
   fallback: gemini-flash-lite
   multimodal: gemini-flash     # vision/audio — also used for voice transcription
-  compaction_model: workhorse
+  compaction: workhorse
   classifier: classifier       # rates complexity 1/2/3
   classifier_min_length: 0     # 0 = always; >0 = min chars; <0 = disabled
 
@@ -434,16 +434,34 @@ Pair with an Authentik **Application + Provider (Proxy)** configured to protect 
 
 ## LLM Routing
 
-| Priority | Role | When |
-|---|---|---|
-| 1 | `multimodal` | Message contains an image or audio (voice transcription) |
-| 2 | `reasoner` | `/model <name>` override, or classifier detects complex reasoning |
-| 3 | `primary` | Default for all other messages |
-| 4 | `fallback` | Primary unavailable (5xx / 429 / network error) |
+Every incoming message is routed to **one** of seven roles. Roles are named after *what they serve*, so the same name maps consistently through `config.yaml → routing.*`, Go code, and the admin UI.
 
-The classifier is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable. The classifier can run on a local model (e.g. Gemma 3n 270M via llama.cpp server) for zero-latency, zero-cost routing — configure `local` provider and set `classifier: local`.
+### Role reference
 
-All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in the database (`kv_settings` table, key `routing.overrides`). A legacy `config/routing.json` file is auto-imported and removed on first start, then never touched again. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
+| Role | Level | When it fires | Typical model |
+|---|---|---|---|
+| `simple` | L1 | Classifier rates the message as trivial (greeting, chitchat, one-line lookup). Cost-optimised. | A cheap OpenRouter model, e.g. `google/gemini-2.5-flash-lite` |
+| `default` | L2 | Most messages. The agentic loop (tool calling, memory, MCP) lives here. | A mid-tier OpenRouter model, e.g. `deepseek/deepseek-chat-v3.1` |
+| `complex` | L3 | Classifier rates the message as hard (deep reasoning, proofs, hard debugging), or `/model <name>` override. | A strong model, e.g. Claude Sonnet 4.5 via bridge or OpenRouter |
+| `fallback` | — | `default` provider is unavailable (5xx / 429 / network). Intentionally a **different vendor** from `default` for provider-outage resilience. | `gemini-flash-lite` (direct Google) |
+| `multimodal` | — | Message contains an image or audio (voice transcription). `default`/`simple` are preferred first if they support vision; `multimodal` is used otherwise. | Gemini Flash (direct Google, for native `input_audio` support) |
+| `classifier` | — | Rates user text as 1/2/3 to pick `simple`/`default`/`complex`. Returns one digit — no tools, no history. | Local Ollama (e.g. `qwen3:0.6b`) or a free OpenRouter model |
+| `compaction` | — | Summarises old history when the conversation grows. No tools. | Anything cheap that understands long context |
+
+The routing order for a normal request:
+
+1. Image or audio? → `multimodal` (or `simple`/`default` if they natively support vision).
+2. Continuing a tool-calling loop? → Keep the same provider (stickiness, one model owns a tool chain from start to finish).
+3. Run `classifier`, get 1 / 2 / 3 → `simple` / `default` / `complex`.
+4. `default` provider returns 5xx/429/network? → `fallback` (same request, different vendor).
+
+### Classifier
+
+The classifier is a tiny call with no history and no tools — it outputs a single digit. It's cheap enough that `classifier_min_length: 0` (always run) is fine when backed by a local Ollama model. Raise `classifier_min_length` to skip trivially short messages if you run a paid classifier; set it negative to disable the three-level split entirely (everything goes through `default`).
+
+### Runtime overrides
+
+All routing roles can be changed live from the [Admin UI](#admin-web-ui) or from Telegram `/routing`. **Changes persist across restarts** in the database (`kv_settings` table, key `routing.overrides`). A legacy `config/routing.json` file is auto-imported and removed on first start, then never touched again. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
 
 ## Semantic Memory
 
@@ -619,7 +637,7 @@ flowchart TD
 
     subgraph LLMs ["LLM Providers"]
         OR["openrouter (workhorse)"]
-        ORx["openrouter (reasoner-or, ...)"]
+        ORx["openrouter (complex-or, ...)"]
         GM["gemini-flash-lite / gemini-flash"]
         OLC["ollama (classifier, local)"]
         CB["claude (via bridge, optional)"]

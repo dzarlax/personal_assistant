@@ -106,28 +106,28 @@ func main() {
 		logger.Error("default routing provider not configured or failed to init", "provider", cfg.Routing.Default)
 		os.Exit(1)
 	}
-	primary := providers[cfg.Routing.Default]
+	defaultProvider := providers[cfg.Routing.Default]
 
-	// Default role keys fall through to routing.default when unspecified.
+	// Optional roles fall through to routing.default when unspecified.
 	multimodalKey := cfg.Routing.Multimodal
 	if multimodalKey == "" {
 		multimodalKey = cfg.Routing.Default
 	}
-	reasonerKey := cfg.Routing.Reasoner
-	if reasonerKey == "" {
-		reasonerKey = cfg.Routing.Default
+	complexKey := cfg.Routing.Complex
+	if complexKey == "" {
+		complexKey = cfg.Routing.Default
 	}
-	localKey := cfg.Routing.Local
-	if localKey == "" {
-		localKey = cfg.Routing.Default
+	simpleKey := cfg.Routing.Simple
+	if simpleKey == "" {
+		simpleKey = cfg.Routing.Default
 	}
 
 	router := llm.NewRouter(providers, llm.RouterConfig{
-		Local:            localKey,
-		Primary:          cfg.Routing.Default,
-		Fallback:         cfg.Routing.Fallback,
-		Multimodal:       multimodalKey,
-		Reasoner:         reasonerKey,
+		Simple:            simpleKey,
+		Default:           cfg.Routing.Default,
+		Complex:           complexKey,
+		Fallback:          cfg.Routing.Fallback,
+		Multimodal:        multimodalKey,
 		Classifier:        cfg.Routing.Classifier,
 		ClassifierMinLen:  cfg.Routing.ClassifierMinLength,
 		ClassifierTimeout: cfg.Routing.ClassifierTimeout,
@@ -136,10 +136,10 @@ func main() {
 
 	// Warn about routing roles that reference missing providers
 	for role, model := range map[string]string{
-		"local":      localKey,
+		"simple":     simpleKey,
 		"fallback":   cfg.Routing.Fallback,
 		"multimodal": multimodalKey,
-		"reasoner":   reasonerKey,
+		"complex":    complexKey,
 		"classifier": cfg.Routing.Classifier,
 	} {
 		if model != "" && providers[model] == nil {
@@ -196,16 +196,18 @@ func main() {
 		applyOpenRouterOverrides(router, s, orOverrides, logger)
 	}
 
-	// Init compacter — use the effective primary after overrides are loaded.
-	// Fallback handles content-filter rejections (e.g. DashScope DataInspectionFailed).
-	effectivePrimaryKey := router.GetConfig().Primary
-	effectivePrimary := providers[effectivePrimaryKey]
-	if effectivePrimary == nil {
-		effectivePrimary = primary
+	// Init compacter — use the effective default after overrides are loaded.
+	// Fallback handles content-filter rejections from the default provider.
+	compactionKey := cfg.Routing.Compaction
+	if compactionKey == "" {
+		compactionKey = router.GetConfig().Default
 	}
-	fallbackKey := router.GetConfig().Fallback
-	compactFallback := providers[fallbackKey]
-	compacter := agent.NewCompacter(effectivePrimary, compactFallback)
+	compactionProvider := providers[compactionKey]
+	if compactionProvider == nil {
+		compactionProvider = defaultProvider
+	}
+	compactFallback := providers[router.GetConfig().Fallback]
+	compacter := agent.NewCompacter(compactionProvider, compactFallback)
 
 	// Init MCP client
 	var mcpClient *mcp.Client

@@ -1149,15 +1149,15 @@ func routingMenuText(cfg llm.RouterConfig) string {
 	}
 	return fmt.Sprintf(
 		"⚙️ *Routing Configuration*\n\n"+
-			"Local \\(1\\): `%s`\n"+
-			"Primary \\(2\\): `%s`\n"+
-			"Reasoner \\(3\\): `%s`\n"+
+			"Simple \\(1\\): `%s`\n"+
+			"Default \\(2\\): `%s`\n"+
+			"Complex \\(3\\): `%s`\n"+
 			"Fallback: `%s`\n"+
 			"Classifier: `%s` \\(%s\\)\n"+
 			"Multimodal: `%s`",
-		escapeMarkdown(cfg.Local),
-		escapeMarkdown(cfg.Primary),
-		escapeMarkdown(cfg.Reasoner),
+		escapeMarkdown(cfg.Simple),
+		escapeMarkdown(cfg.Default),
+		escapeMarkdown(cfg.Complex),
 		escapeMarkdown(cfg.Fallback),
 		escapeMarkdown(cfg.Classifier),
 		classifierStatus,
@@ -1168,11 +1168,11 @@ func routingMenuText(cfg llm.RouterConfig) string {
 func routingMenuKeyboard(cfg llm.RouterConfig, adminURL string) tgbotapi.InlineKeyboardMarkup {
 	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("1️⃣ Local: "+cfg.Local, "rt:role:local"),
-			tgbotapi.NewInlineKeyboardButtonData("2️⃣ Primary: "+cfg.Primary, "rt:role:primary"),
+			tgbotapi.NewInlineKeyboardButtonData("1️⃣ Simple: "+cfg.Simple, "rt:role:simple"),
+			tgbotapi.NewInlineKeyboardButtonData("2️⃣ Default: "+cfg.Default, "rt:role:default"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("3️⃣ Reasoner: "+cfg.Reasoner, "rt:role:reasoner"),
+			tgbotapi.NewInlineKeyboardButtonData("3️⃣ Complex: "+cfg.Complex, "rt:role:complex"),
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Fallback: "+cfg.Fallback, "rt:role:fallback"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -1316,9 +1316,10 @@ func (h *Handler) NotifyMissingRouting() {
 	}
 
 	roles := []struct{ name, model string }{
-		{"local", cfg.Local},
+		{"simple", cfg.Simple},
+		{"default", cfg.Default},
+		{"complex", cfg.Complex},
 		{"fallback", cfg.Fallback},
-		{"reasoner", cfg.Reasoner},
 		{"classifier", cfg.Classifier},
 		{"multimodal", cfg.Multimodal},
 	}
@@ -1340,14 +1341,14 @@ func (h *Handler) NotifyMissingRouting() {
 // roleValue returns the current model name for a given routing role.
 func roleValue(cfg llm.RouterConfig, role string) string {
 	switch role {
-	case "local":
-		return cfg.Local
-	case "primary":
-		return cfg.Primary
+	case "simple":
+		return cfg.Simple
+	case "default":
+		return cfg.Default
 	case "fallback":
 		return cfg.Fallback
-	case "reasoner":
-		return cfg.Reasoner
+	case "complex":
+		return cfg.Complex
 	case "classifier":
 		return cfg.Classifier
 	case "multimodal":

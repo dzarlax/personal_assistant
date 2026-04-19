@@ -138,12 +138,7 @@ func (s *Server) handleRoleSet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "slot required", http.StatusBadRequest)
 		return
 	}
-	// SetRole uses "primary" for the default slot.
-	routerRole := role
-	if role == "default" {
-		routerRole = "primary"
-	}
-	if err := s.router.SetRole(routerRole, slot); err != nil {
+	if err := s.router.SetRole(role, slot); err != nil {
 		s.logger.Warn("role set failed", "role", role, "slot", slot, "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -273,14 +268,14 @@ func (s *Server) buildRouting() uiRouting {
 	}
 
 	roleCur := map[string]string{
-		"default":          cfg.Primary,
-		"reasoner":         cfg.Reasoner,
-		"multimodal":       cfg.Multimodal,
-		"fallback":         cfg.Fallback,
-		"local":            cfg.Local,
-		"classifier":       cfg.Classifier,
+		"default":    cfg.Default,
+		"complex":    cfg.Complex,
+		"multimodal": cfg.Multimodal,
+		"fallback":   cfg.Fallback,
+		"simple":     cfg.Simple,
+		"classifier": cfg.Classifier,
 	}
-	order := []string{"default", "reasoner", "multimodal", "fallback", "local", "classifier"}
+	order := []string{"simple", "default", "complex", "multimodal", "fallback", "classifier"}
 	roles := make([]uiRole, 0, len(order))
 	for _, r := range order {
 		roles = append(roles, uiRole{

@@ -265,7 +265,7 @@ func TestSQLite_Settings(t *testing.T) {
 		t.Error("expected ok=false for missing key")
 	}
 
-	payload := `{"primary":"workhorse","openrouter_models":{"workhorse":"deepseek/deepseek-chat-v3.1"}}`
+	payload := `{"default":"workhorse","openrouter_models":{"workhorse":"deepseek/deepseek-chat-v3.1"}}`
 	if err := s.PutSetting(ctx, "routing.overrides", payload); err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSQLite_Settings(t *testing.T) {
 	}
 
 	// Upsert
-	newPayload := `{"primary":"cheap-or"}`
+	newPayload := `{"default":"cheap-or"}`
 	if err := s.PutSetting(ctx, "routing.overrides", newPayload); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}

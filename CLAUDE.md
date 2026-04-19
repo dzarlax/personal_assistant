@@ -204,9 +204,21 @@ Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → respo
 
 ### Model config structure
 
-`models:` in `config.yaml` is a **map** (`type ModelsConfig map[string]ModelConfig` in `internal/config/config.go`). Each entry's YAML key becomes its routing name (referenced from `routing.default`, `routing.reasoner`, etc.). The entry's `provider` field selects the backend: `openrouter`, `gemini`, `ollama`, `claude-bridge`, `local` for LLMs; `hf-tei`, `openai` for embeddings. The special key `embedding` is reserved for the MCP embedding provider and is not registered as an LLM.
+`models:` in `config.yaml` is a **map** (`type ModelsConfig map[string]ModelConfig` in `internal/config/config.go`). Each entry's YAML key becomes its routing name (referenced from `routing.default`, `routing.complex`, etc.). The entry's `provider` field selects the backend: `openrouter`, `gemini`, `ollama`, `claude-bridge`, `local` for LLMs; `hf-tei`, `openai` for embeddings. The special key `embedding` is reserved for the MCP embedding provider and is not registered as an LLM.
 
-`cmd/agent/main.go` iterates the map once at startup, dispatching each entry by `provider` to the matching `llm.New*` constructor. An entry with an unknown or empty `provider` is warned and skipped. This means you can define as many OpenRouter (or any other) models as you want — e.g. `workhorse`, `reasoner-or`, `cheap-or` — and wire each to a different `routing.*` role without any Go changes.
+`cmd/agent/main.go` iterates the map once at startup, dispatching each entry by `provider` to the matching `llm.New*` constructor. An entry with an unknown or empty `provider` is warned and skipped. This means you can define as many OpenRouter (or any other) models as you want — e.g. `workhorse`, `complex-or`, `cheap-or` — and wire each to a different `routing.*` role without any Go changes.
+
+**Routing role naming (matches `config.yaml`, Go struct, Router API, admin UI — all consistent):**
+
+| yaml | Go field | SetRole arg | Description |
+|---|---|---|---|
+| `routing.simple` | `RoutingConfig.Simple` / `RouterConfig.Simple` | `"simple"` | L1 — cheap/fast |
+| `routing.default` | `.Default` | `"default"` | L2 — agentic loop workhorse |
+| `routing.complex` | `.Complex` | `"complex"` | L3 — strong reasoning |
+| `routing.fallback` | `.Fallback` | `"fallback"` | provider outage backup |
+| `routing.multimodal` | `.Multimodal` | `"multimodal"` | vision/audio |
+| `routing.classifier` | `.Classifier` | `"classifier"` | complexity rater |
+| `routing.compaction` | `.Compaction` | — | history summariser |
 
 ### Adding a new LLM provider backend
 

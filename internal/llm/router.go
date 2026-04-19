@@ -26,25 +26,28 @@ User: write a REST API in Go → 2
 User: prove Fermat last theorem → 3`
 
 // RouterConfig holds the keys into the providers map for special roles.
+// Role names are chosen to match RoutingConfig in internal/config:
+// simple (L1) → default (L2) → complex (L3).
 type RouterConfig struct {
-	Local            string // level 1: simple tasks (local model)
-	Primary          string // level 2: moderate tasks (cloud model)
-	Reasoner         string // level 3: complex reasoning
-	Fallback         string
-	Multimodal       string
+	Simple            string // level 1: simple/cheap tasks
+	Default           string // level 2: moderate tasks (agentic loop)
+	Complex           string // level 3: complex reasoning
+	Fallback          string
+	Multimodal        string
 	Classifier        string // provider used for complexity classification
 	ClassifierMinLen  int    // min rune length to run classifier; 0 = always; <0 = disabled
 	ClassifierTimeout int    // seconds; default 15
 	ClassifierPrompt  string // system prompt for classifier; uses default if empty
 }
 
-// routingOverrides is the persisted subset of RouterConfig (JSON file).
+// routingOverrides is the persisted subset of RouterConfig (JSON blob in
+// kv_settings.routing.overrides).
 type routingOverrides struct {
-	Local            string `json:"local,omitempty"`
-	Primary          string `json:"primary,omitempty"`
+	Simple           string `json:"simple,omitempty"`
+	Default          string `json:"default,omitempty"`
+	Complex          string `json:"complex,omitempty"`
 	Fallback         string `json:"fallback,omitempty"`
 	Multimodal       string `json:"multimodal,omitempty"`
-	Reasoner         string `json:"reasoner,omitempty"`
 	Classifier       string `json:"classifier,omitempty"`
 	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
 	// Per-slot OpenRouter model overrides (slot name → model id). Lets the admin
@@ -148,11 +151,11 @@ func (r *Router) LoadPersistedOverrides() error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if ov.Local != "" {
-		r.cfg.Local = ov.Local
+	if ov.Simple != "" {
+		r.cfg.Simple = ov.Simple
 	}
-	if ov.Primary != "" {
-		r.cfg.Primary = ov.Primary
+	if ov.Default != "" {
+		r.cfg.Default = ov.Default
 	}
 	if ov.Fallback != "" {
 		r.cfg.Fallback = ov.Fallback
@@ -160,8 +163,8 @@ func (r *Router) LoadPersistedOverrides() error {
 	if ov.Multimodal != "" {
 		r.cfg.Multimodal = ov.Multimodal
 	}
-	if ov.Reasoner != "" {
-		r.cfg.Reasoner = ov.Reasoner
+	if ov.Complex != "" {
+		r.cfg.Complex = ov.Complex
 	}
 	if ov.Classifier != "" {
 		r.cfg.Classifier = ov.Classifier
@@ -217,11 +220,11 @@ func (r *Router) saveOverrides() {
 	}
 	minLen := r.cfg.ClassifierMinLen
 	ov := routingOverrides{
-		Local:            r.cfg.Local,
-		Primary:          r.cfg.Primary,
+		Simple:           r.cfg.Simple,
+		Default:          r.cfg.Default,
+		Complex:          r.cfg.Complex,
 		Fallback:         r.cfg.Fallback,
 		Multimodal:       r.cfg.Multimodal,
-		Reasoner:         r.cfg.Reasoner,
 		Classifier:       r.cfg.Classifier,
 		ClassifierMinLen: &minLen,
 		OpenRouterModels: r.currentOpenRouterModels(),
@@ -283,7 +286,7 @@ func (r *Router) SetProviderModel(slot, modelID string, caps Capabilities) error
 }
 
 // SetRole updates a routing role to point at the given model name.
-// Valid roles: primary, fallback, reasoner, classifier, multimodal.
+// Valid roles: simple, default, complex, fallback, classifier, multimodal.
 func (r *Router) SetRole(role, model string) error {
 	if _, ok := r.providers[model]; !ok {
 		return errors.New("unknown model: " + model)
@@ -291,14 +294,14 @@ func (r *Router) SetRole(role, model string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch role {
-	case "local":
-		r.cfg.Local = model
-	case "primary":
-		r.cfg.Primary = model
+	case "simple":
+		r.cfg.Simple = model
+	case "default":
+		r.cfg.Default = model
+	case "complex":
+		r.cfg.Complex = model
 	case "fallback":
 		r.cfg.Fallback = model
-	case "reasoner":
-		r.cfg.Reasoner = model
 	case "classifier":
 		r.cfg.Classifier = model
 	case "multimodal":
@@ -331,7 +334,7 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 		// Build fallback chain: override → default → fallback.
 		// Skip providers already tried or equal to current.
 		r.mu.RLock()
-		chain := []string{r.cfg.Primary, r.cfg.Fallback}
+		chain := []string{r.cfg.Default, r.cfg.Fallback}
 		r.mu.RUnlock()
 
 		for _, key := range chain {
@@ -388,7 +391,7 @@ func (r *Router) syncStream(ctx context.Context, provider Provider, messages []M
 // syncFallbackStream tries the fallback chain synchronously and wraps the result.
 func (r *Router) syncFallbackStream(ctx context.Context, failed Provider, messages []Message, systemPrompt string, tools []Tool, origErr error) (<-chan StreamChunk, error) {
 	r.mu.RLock()
-	chain := []string{r.cfg.Primary, r.cfg.Fallback}
+	chain := []string{r.cfg.Default, r.cfg.Fallback}
 	r.mu.RUnlock()
 
 	for _, key := range chain {
@@ -494,14 +497,14 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
-	// Multimodal routing — prefer local/primary if they support vision
+	// Multimodal routing — prefer simple/default if they support vision
 	if multimodal {
-		if p := r.get(cfg.Local); p != nil && supportsVision(p) {
-			slog.Info("routing", "reason", "local+vision", "provider", p.Name())
+		if p := r.get(cfg.Simple); p != nil && supportsVision(p) {
+			slog.Info("routing", "reason", "simple+vision", "provider", p.Name())
 			return p
 		}
-		if p := r.get(cfg.Primary); p != nil && supportsVision(p) {
-			slog.Info("routing", "reason", "primary+vision", "provider", p.Name())
+		if p := r.get(cfg.Default); p != nil && supportsVision(p) {
+			slog.Info("routing", "reason", "default+vision", "provider", p.Name())
 			return p
 		}
 		if p := r.get(cfg.Multimodal); p != nil {
@@ -518,7 +521,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
-	// Classifier-based three-level routing: 1=local, 2=primary, 3=reasoner.
+	// Classifier-based three-level routing: 1=simple, 2=default, 3=complex.
 	// ClassifierMinLen > 0: only classify messages longer than threshold.
 	// ClassifierMinLen == 0: always classify (classifier is a free local model).
 	// ClassifierMinLen < 0: disabled entirely.
@@ -528,22 +531,22 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 			level := r.classify(ctx, text)
 			switch level {
 			case 1:
-				if p := r.get(cfg.Local); p != nil {
-					slog.Info("routing", "reason", "classifier→local", "level", 1, "provider", p.Name())
+				if p := r.get(cfg.Simple); p != nil {
+					slog.Info("routing", "reason", "classifier→simple", "level", 1, "provider", p.Name())
 					return p
 				}
 			case 3:
-				if p := r.get(cfg.Reasoner); p != nil {
-					slog.Info("routing", "reason", "classifier→reasoner", "level", 3, "provider", p.Name())
+				if p := r.get(cfg.Complex); p != nil {
+					slog.Info("routing", "reason", "classifier→complex", "level", 3, "provider", p.Name())
 					return p
 				}
 			}
-			// level 2 or fallback → primary
+			// level 2 or fallback → default
 		}
 	}
 
-	if p := r.get(cfg.Primary); p != nil {
-		slog.Info("routing", "reason", "primary", "provider", p.Name())
+	if p := r.get(cfg.Default); p != nil {
+		slog.Info("routing", "reason", "default", "provider", p.Name())
 		return p
 	}
 	// Should never happen if config is valid
@@ -570,16 +573,16 @@ func (r *Router) keyFor(p Provider) string {
 }
 
 // classify calls the classifier provider to rate message complexity.
-// Returns 1 (simple/local), 2 (moderate/primary), or 3 (hard/reasoner).
+// Returns 1 (simple), 2 (default), or 3 (complex).
 // Defaults to 2 on any error.
 func (r *Router) classify(ctx context.Context, text string) int {
 	r.mu.RLock()
 	classifierKey := r.cfg.Classifier
-	primaryKey := r.cfg.Primary
+	defaultKey := r.cfg.Default
 	r.mu.RUnlock()
 
 	if classifierKey == "" {
-		classifierKey = primaryKey
+		classifierKey = defaultKey
 	}
 	provider := r.get(classifierKey)
 	if provider == nil {

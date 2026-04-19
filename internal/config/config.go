@@ -118,15 +118,15 @@ type ModelsConfig map[string]ModelConfig
 
 
 type RoutingConfig struct {
-	Local               string `yaml:"local"`                 // level 1: simple tasks (local model)
-	Default             string `yaml:"default"`               // level 2: moderate tasks (cloud model)
+	Simple              string `yaml:"simple"`              // level 1: simple/cheap tasks
+	Default             string `yaml:"default"`             // level 2: moderate tasks (agentic loop)
+	Complex             string `yaml:"complex"`             // level 3: complex reasoning
 	Fallback            string `yaml:"fallback"`
 	Multimodal          string `yaml:"multimodal"`
-	Reasoner            string `yaml:"reasoner"`              // level 3: complex reasoning
-	Classifier          string `yaml:"classifier"`              // model that rates complexity 1/2/3
-	ClassifierTimeout   int    `yaml:"classifier_timeout"`     // seconds; default 15
-	ClassifierPrompt    string `yaml:"classifier_prompt"`      // system prompt; has default
-	CompactionModel     string `yaml:"compaction_model"`
+	Classifier          string `yaml:"classifier"`          // model that rates complexity 1/2/3
+	ClassifierTimeout   int    `yaml:"classifier_timeout"`  // seconds; default 15
+	ClassifierPrompt    string `yaml:"classifier_prompt"`   // system prompt; has default
+	Compaction          string `yaml:"compaction"`
 	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = always; <0 = disabled
 }
 

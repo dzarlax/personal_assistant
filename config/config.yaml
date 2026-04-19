@@ -19,7 +19,7 @@ models:
     vision: true
 
   # Example: dedicate a separate OpenRouter model to a routing role.
-  # reasoner-or:
+  # complex-or:
   #   provider: openrouter
   #   model: anthropic/claude-sonnet-4.5
   #   api_key: ${OPENROUTER_API_KEY}
@@ -68,12 +68,12 @@ models:
     max_tokens: 120
 
 routing:
-  local: workhorse             # level 1: simple tasks
+  simple: workhorse            # level 1: simple/cheap tasks
   default: workhorse           # level 2: moderate tasks (agentic loop)
-  reasoner: claude-bridge      # level 3: complex reasoning via Claude bridge
+  complex: claude-bridge       # level 3: complex reasoning via Claude bridge
   fallback: gemini-flash-lite
   multimodal: gemini-flash     # vision/audio — also used for voice transcription
-  compaction_model: workhorse
+  compaction: workhorse
   classifier: classifier       # rates complexity 1/2/3
   classifier_timeout: 15       # seconds
   classifier_min_length: 0     # 0 = always classify; >0 = min chars; <0 = disabled
