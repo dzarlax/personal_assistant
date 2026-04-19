@@ -4,19 +4,35 @@ telegram:
     - ${TELEGRAM_OWNER_CHAT_ID}
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
+# Each entry's KEY is its routing name (referenced from `routing.*` below).
+# Each entry's `provider` field selects the backend implementation.
+# Known providers: openrouter, gemini, ollama, claude-bridge, local, hf-tei, openai.
+# The key "embedding" is reserved for the MCP embedding provider.
 models:
-  deepseek:
-    provider: deepseek
-    model: deepseek-chat
-    api_key: ${DEEPSEEK_API_KEY}
+  # --- OpenRouter — one API key, many models. Add as many entries as you need. ---
+  workhorse:
+    provider: openrouter
+    model: ${OPENROUTER_MODEL:-deepseek/deepseek-chat-v3.1}
+    api_key: ${OPENROUTER_API_KEY}
     max_tokens: 4096
-    base_url: https://api.deepseek.com
-  deepseek-r1:
-    provider: deepseek
-    model: deepseek-reasoner
-    api_key: ${DEEPSEEK_API_KEY}
-    max_tokens: 8192
-    base_url: https://api.deepseek.com
+    base_url: https://openrouter.ai/api/v1
+    vision: true
+
+  # Example: dedicate a separate OpenRouter model to a routing role.
+  # reasoner-or:
+  #   provider: openrouter
+  #   model: anthropic/claude-sonnet-4.5
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   max_tokens: 8192
+  #   base_url: https://openrouter.ai/api/v1
+  # cheap-or:
+  #   provider: openrouter
+  #   model: google/gemini-2.5-flash-lite
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   max_tokens: 2048
+  #   base_url: https://openrouter.ai/api/v1
+
+  # --- Gemini (direct Google API) — fallback + multimodal/transcription. ---
   gemini-flash-lite:
     provider: gemini
     model: gemini-3.1-flash-lite-preview
@@ -29,89 +45,57 @@ models:
     api_key: ${GEMINI_API_KEY}
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-  # Embedding model for MCP vector tool filtering (tool_filter.top_k must be > 0).
-  # Three providers are supported — uncomment the one you want to use.
-  #
-  # Option 1: Gemini (default)
-  # embedding:
-  #   provider: gemini
-  #   model: gemini-embedding-001
-  #   api_key: ${GEMINI_API_KEY}
-  #
-  # Option 2: HuggingFace Text Embeddings Inference (e.g. personal-memory server)
+
+  # --- MCP embedding (hf-tei self-hosted). ---
   embedding:
     provider: hf-tei
     base_url: https://embed.dzarlax.dev   # or http://embed-service:8080 in Docker
-    api_key: ${EMBED_API_KEY}                # optional; format: "user:password" for Basic Auth
-  #
-  # Option 3: OpenAI-compatible endpoint
-  # embedding:
-  #   provider: openai
-  #   base_url: https://api.openai.com
-  #   model: text-embedding-3-small
-  #   api_key: ${OPENAI_API_KEY}
-  qwen-flash:
-    provider: qwen
-    model: qwen3.5-flash
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 4096
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen3.5-plus:
-    provider: qwen
-    model: qwen3.5-122b-a10b
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 4096
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen-max:
-    provider: qwen
-    model: qwen3-max
-    api_key: ${QWEN_API_KEY}
-    max_tokens: 8192
-    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key: ${EMBED_API_KEY}             # format: "user:password" for Basic Auth
 
-  # Ollama — classifier model (qwen3:0.6b). Good instruction following for classification.
-  ollama:
+  # --- Local Ollama — cheap fast classifier on host GPU. ---
+  classifier:
+    provider: ollama
     model: qwen3:0.6b
     base_url: http://host.docker.internal:11434
     max_tokens: 64
     no_think: true
 
-  # Ollama Cloud — model configurable via OLLAMA_MODEL env var.
-  ollama-cloud:
-    model: ${OLLAMA_MODEL:-qwen3.5:397b-cloud}
-    base_url: https://api.ollama.com
-    api_key: ${OLLAMA_API_KEY}
-    max_tokens: 4096
-    vision: true
-
-  # Claude via bridge (host service wrapping `claude -p` CLI).
-  # Requires claude-bridge running on host:9900.
-  # max_tokens here is used as timeout_sec for the CLI call.
-  claude:
+  # --- Claude via host-side bridge (wraps `claude -p` CLI). ---
+  claude-bridge:
+    provider: claude-bridge
     base_url: http://host.docker.internal:9900
     api_key: ${CLAUDE_BRIDGE_TOKEN}
     max_tokens: 120
 
 routing:
-  local: ollama-cloud           # level 1: simple tasks → Qwen via Ollama Cloud
-  default: ollama-cloud         # level 2: moderate tasks → Qwen via Ollama Cloud
-  reasoner: claude             # level 3: complex reasoning → Claude
+  local: workhorse             # level 1: simple tasks
+  default: workhorse           # level 2: moderate tasks (agentic loop)
+  reasoner: claude-bridge      # level 3: complex reasoning via Claude bridge
   fallback: gemini-flash-lite
-  multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)
-  compaction_model: deepseek
-  classifier: ollama           # gemma3:1b rates complexity 1/2/3
-  classifier_timeout: 15      # seconds
-  classifier_min_length: 0    # 0 = always classify; >0 = min chars; <0 = disabled
+  multimodal: gemini-flash     # vision/audio — also used for voice transcription
+  compaction_model: workhorse
+  classifier: classifier       # rates complexity 1/2/3
+  classifier_timeout: 15       # seconds
+  classifier_min_length: 0     # 0 = always classify; >0 = min chars; <0 = disabled
 
 tool_filter:
   top_k: 20
 
-# Ollama web search — gives LLM access to real-time web results.
-# Requires an Ollama Cloud API key (ollama.com/settings/keys).
+# Web search — gives LLM access to real-time web results.
+# provider: "tavily" (free 1000/mo, LLM-ready answer+sources) or "ollama" (Ollama Cloud).
+# Get Tavily key at app.tavily.com (no card required for free tier).
 web_search:
   enabled: true
-  api_key: ${OLLAMA_API_KEY}
-  base_url: https://ollama.com   # default
+  provider: tavily
+  api_key: ${TAVILY_API_KEY}
+
+# Web fetch — extract main article text from a URL.
+# Primary: HTTP GET + go-readability (no cost, no API key).
+# Fallback: headless Chrome via CDP (for JS-heavy / bot-protected sites).
+# Leave cdp_url empty to disable fallback.
+web_fetch:
+  enabled: true
+  cdp_url: ${WEB_FETCH_CDP_URL:-}
 
 # Filesystem access — gives the assistant read/write access to a local directory.
 # Mount the directory into the container via volumes in docker-compose.yml.

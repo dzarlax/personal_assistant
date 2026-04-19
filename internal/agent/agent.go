@@ -35,28 +35,31 @@ const (
 )
 
 type Agent struct {
-	router     *llm.Router
-	store      store.Store
-	mcp        *mcp.Client
-	compacter  *Compacter
-	cache      *ResponseCache
-	sysPrompt  string
-	logger     *slog.Logger
-	webSearch  *WebSearchConfig  // nil = disabled
-	transcribe *TranscribeConfig // nil = disabled
-	filesystem *FilesystemConfig // nil = disabled
-	tts        *TTSConfig        // nil = disabled
+	router         *llm.Router
+	store          store.Store
+	mcp            *mcp.Client
+	compacter      *Compacter
+	cache          *ResponseCache
+	sysPrompt      string
+	logger         *slog.Logger
+	webSearch      *WebSearchConfig  // nil = disabled
+	webSearchCache *webSearchCache
+	webFetch       *WebFetchConfig   // nil = disabled
+	transcribe     *TranscribeConfig // nil = disabled
+	filesystem     *FilesystemConfig // nil = disabled
+	tts            *TTSConfig        // nil = disabled
 }
 
 func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Compacter, sysPrompt string, logger *slog.Logger) *Agent {
 	return &Agent{
-		router:    router,
-		store:     s,
-		mcp:       mcpClient,
-		compacter: compacter,
-		cache:     newResponseCache(),
-		sysPrompt: sysPrompt,
-		logger:    logger,
+		router:         router,
+		store:          s,
+		mcp:            mcpClient,
+		compacter:      compacter,
+		cache:          newResponseCache(),
+		webSearchCache: newWebSearchCache(),
+		sysPrompt:      sysPrompt,
+		logger:         logger,
 	}
 }
 
@@ -81,6 +84,12 @@ func (a *Agent) EnableTranscription(cfg TranscribeConfig) {
 // EnableWebSearch activates the Ollama web search tool.
 func (a *Agent) EnableWebSearch(cfg WebSearchConfig) {
 	a.webSearch = &cfg
+}
+
+// EnableWebFetch activates the built-in web_fetch tool (HTTP+readability,
+// optional CDP fallback to a headless Chrome).
+func (a *Agent) EnableWebFetch(cfg WebFetchConfig) {
+	a.webFetch = &cfg
 }
 
 // EnableFilesystem activates built-in filesystem tools scoped to cfg.Root.
@@ -133,6 +142,9 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	}
 	if a.webSearch != nil {
 		tools = append(tools, webSearchTool())
+	}
+	if a.webFetch != nil {
+		tools = append(tools, webFetchTool())
 	}
 	if a.filesystem != nil {
 		tools = append(tools, filesystemTools()...)
@@ -233,6 +245,9 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 	}
 	if a.webSearch != nil {
 		tools = append(tools, webSearchTool())
+	}
+	if a.webFetch != nil {
+		tools = append(tools, webFetchTool())
 	}
 	if a.filesystem != nil {
 		tools = append(tools, filesystemTools()...)
@@ -489,7 +504,14 @@ func (a *Agent) ListTools() []ToolInfo {
 		}
 	}
 	if a.webSearch != nil {
-		result = append(result, ToolInfo{Name: webSearchToolName, ServerName: "ollama"})
+		serverName := a.webSearch.Provider
+		if serverName == "" {
+			serverName = webSearchProviderOllama
+		}
+		result = append(result, ToolInfo{Name: webSearchToolName, ServerName: serverName})
+	}
+	if a.webFetch != nil {
+		result = append(result, ToolInfo{Name: webFetchToolName, ServerName: "web_fetch"})
 	}
 	if a.filesystem != nil {
 		for _, t := range filesystemTools() {
@@ -518,7 +540,10 @@ func (a *Agent) summarizeToolResult(ctx context.Context, toolName, result string
 // built-in tools are handled directly; everything else goes to MCP.
 func (a *Agent) callTool(ctx context.Context, name, argsJSON string) (string, error) {
 	if name == webSearchToolName && a.webSearch != nil {
-		return callWebSearch(ctx, *a.webSearch, argsJSON)
+		return a.callWebSearchCached(ctx, argsJSON)
+	}
+	if name == webFetchToolName && a.webFetch != nil {
+		return a.callWebFetchCached(ctx, argsJSON)
 	}
 	if a.filesystem != nil {
 		switch name {

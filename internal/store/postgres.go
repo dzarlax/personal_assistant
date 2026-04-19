@@ -44,7 +44,127 @@ func NewPostgres(ctx context.Context, connString string) (*Postgres, error) {
 		return nil, fmt.Errorf("ping pg: %w", err)
 	}
 
-	return &Postgres{pool: pool}, nil
+	p := &Postgres{pool: pool}
+	if err := p.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("pg migrate: %w", err)
+	}
+	return p, nil
+}
+
+// migrate creates tables this binary owns (idempotent).
+// The main messages table is assumed to exist — it's maintained externally.
+func (p *Postgres) migrate(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS model_capabilities (
+			provider         TEXT        NOT NULL,
+			model_id         TEXT        NOT NULL,
+			vision           BOOLEAN     NOT NULL DEFAULT FALSE,
+			tools            BOOLEAN     NOT NULL DEFAULT FALSE,
+			reasoning        BOOLEAN     NOT NULL DEFAULT FALSE,
+			prompt_price     DOUBLE PRECISION NOT NULL DEFAULT 0,
+			completion_price DOUBLE PRECISION NOT NULL DEFAULT 0,
+			context_length   INTEGER     NOT NULL DEFAULT 0,
+			fetched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (provider, model_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS kv_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+	}
+	for _, s := range stmts {
+		if _, err := p.pool.Exec(ctx, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- SettingsStore implementation ---
+
+func (p *Postgres) GetSetting(ctx context.Context, key string) (string, bool, error) {
+	var v string
+	err := p.pool.QueryRow(ctx, `SELECT value FROM kv_settings WHERE key = $1`, key).Scan(&v)
+	if err == pgx.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get setting: %w", err)
+	}
+	return v, true, nil
+}
+
+func (p *Postgres) PutSetting(ctx context.Context, key, value string) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO kv_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+		key, value)
+	if err != nil {
+		return fmt.Errorf("put setting: %w", err)
+	}
+	return nil
+}
+
+// --- CapabilityStore implementation ---
+
+func (p *Postgres) GetCapabilities(ctx context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
+	var c llm.Capabilities
+	err := p.pool.QueryRow(ctx, `
+		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length
+		FROM model_capabilities WHERE provider = $1 AND model_id = $2`,
+		provider, modelID).Scan(&c.Vision, &c.Tools, &c.Reasoning,
+		&c.PromptPrice, &c.CompletionPrice, &c.ContextLength)
+	if err == pgx.ErrNoRows {
+		return llm.Capabilities{}, false, nil
+	}
+	if err != nil {
+		return llm.Capabilities{}, false, fmt.Errorf("get capabilities: %w", err)
+	}
+	return c, true, nil
+}
+
+func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string, c llm.Capabilities) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO model_capabilities
+			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, fetched_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		ON CONFLICT (provider, model_id) DO UPDATE SET
+			vision           = EXCLUDED.vision,
+			tools            = EXCLUDED.tools,
+			reasoning        = EXCLUDED.reasoning,
+			prompt_price     = EXCLUDED.prompt_price,
+			completion_price = EXCLUDED.completion_price,
+			context_length   = EXCLUDED.context_length,
+			fetched_at       = NOW()`,
+		provider, modelID, c.Vision, c.Tools, c.Reasoning,
+		c.PromptPrice, c.CompletionPrice, c.ContextLength)
+	if err != nil {
+		return fmt.Errorf("put capabilities: %w", err)
+	}
+	return nil
+}
+
+func (p *Postgres) GetAllCapabilities(ctx context.Context, provider string) (map[string]llm.Capabilities, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length
+		FROM model_capabilities WHERE provider = $1`, provider)
+	if err != nil {
+		return nil, fmt.Errorf("list capabilities: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]llm.Capabilities)
+	for rows.Next() {
+		var id string
+		var c llm.Capabilities
+		if err := rows.Scan(&id, &c.Vision, &c.Tools, &c.Reasoning,
+			&c.PromptPrice, &c.CompletionPrice, &c.ContextLength); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
 }
 
 // Close releases the connection pool.

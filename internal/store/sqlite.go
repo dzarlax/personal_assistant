@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -31,6 +32,25 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, id);
+
+CREATE TABLE IF NOT EXISTS model_capabilities (
+    provider         TEXT    NOT NULL,
+    model_id         TEXT    NOT NULL,
+    vision           INTEGER NOT NULL DEFAULT 0,
+    tools            INTEGER NOT NULL DEFAULT 0,
+    reasoning        INTEGER NOT NULL DEFAULT 0,
+    prompt_price     REAL    NOT NULL DEFAULT 0,
+    completion_price REAL    NOT NULL DEFAULT 0,
+    context_length   INTEGER NOT NULL DEFAULT 0,
+    fetched_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (provider, model_id)
+);
+
+CREATE TABLE IF NOT EXISTS kv_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 const (
@@ -554,4 +574,107 @@ func cosineSimilarityF32(a, b []float32) float64 {
 		return 0
 	}
 	return dot / denom
+}
+
+// --- CapabilityStore implementation ---
+
+// GetCapabilities returns cached capabilities for (provider, modelID) or (_, false, nil) when absent.
+func (s *SQLite) GetCapabilities(ctx context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length
+		FROM model_capabilities WHERE provider = ? AND model_id = ?`,
+		provider, modelID)
+	var c llm.Capabilities
+	var vision, tools, reasoning int
+	err := row.Scan(&vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength)
+	if err == sql.ErrNoRows {
+		return llm.Capabilities{}, false, nil
+	}
+	if err != nil {
+		return llm.Capabilities{}, false, fmt.Errorf("get capabilities: %w", err)
+	}
+	c.Vision = vision == 1
+	c.Tools = tools == 1
+	c.Reasoning = reasoning == 1
+	return c, true, nil
+}
+
+// PutCapabilities upserts capabilities for (provider, modelID) and updates fetched_at.
+func (s *SQLite) PutCapabilities(ctx context.Context, provider, modelID string, c llm.Capabilities) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO model_capabilities
+			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(provider, model_id) DO UPDATE SET
+			vision = excluded.vision,
+			tools = excluded.tools,
+			reasoning = excluded.reasoning,
+			prompt_price = excluded.prompt_price,
+			completion_price = excluded.completion_price,
+			context_length = excluded.context_length,
+			fetched_at = CURRENT_TIMESTAMP`,
+		provider, modelID, boolToInt(c.Vision), boolToInt(c.Tools), boolToInt(c.Reasoning),
+		c.PromptPrice, c.CompletionPrice, c.ContextLength)
+	if err != nil {
+		return fmt.Errorf("put capabilities: %w", err)
+	}
+	return nil
+}
+
+// GetAllCapabilities returns all known capabilities for the given provider.
+func (s *SQLite) GetAllCapabilities(ctx context.Context, provider string) (map[string]llm.Capabilities, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length
+		FROM model_capabilities WHERE provider = ?`, provider)
+	if err != nil {
+		return nil, fmt.Errorf("list capabilities: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]llm.Capabilities)
+	for rows.Next() {
+		var id string
+		var c llm.Capabilities
+		var vision, tools, reasoning int
+		if err := rows.Scan(&id, &vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength); err != nil {
+			return nil, err
+		}
+		c.Vision = vision == 1
+		c.Tools = tools == 1
+		c.Reasoning = reasoning == 1
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// --- SettingsStore implementation ---
+
+func (s *SQLite) GetSetting(ctx context.Context, key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM kv_settings WHERE key = ?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get setting: %w", err)
+	}
+	return v, true, nil
+}
+
+func (s *SQLite) PutSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO kv_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		key, value)
+	if err != nil {
+		return fmt.Errorf("put setting: %w", err)
+	}
+	return nil
 }

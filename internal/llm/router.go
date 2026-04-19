@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sort"
@@ -46,6 +47,11 @@ type routingOverrides struct {
 	Reasoner         string `json:"reasoner,omitempty"`
 	Classifier       string `json:"classifier,omitempty"`
 	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
+	// Per-slot OpenRouter model overrides (slot name → model id). Lets the admin
+	// UI swap the model backing e.g. `workhorse` to `anthropic/claude-sonnet-4.5`
+	// without editing config.yaml. Applied by main.go after LoadPersistedOverrides.
+	OpenRouterModels map[string]string `json:"openrouter_models,omitempty"`
+	// Legacy, kept for backward-compat with existing routing.json files.
 	OllamaCloudModel  string `json:"ollama_cloud_model,omitempty"`
 	OllamaCloudVision *bool  `json:"ollama_cloud_vision,omitempty"`
 }
@@ -58,9 +64,14 @@ type Router struct {
 
 	mu          sync.RWMutex
 	override    string // set via SetOverride; any key in providers, or "" for auto
-	persistPath string // path to save/load routing overrides; empty = no persistence
-	lastRouted    string // display name of last provider (for UI)
-	lastRoutedKey string // map key of last provider (for tool continuation)
+	persistPath string // legacy: file for routing overrides. Read once on first start
+	//                   for migration, then the binary writes to the settings store.
+	settings      SettingsStore // primary persistence; DB-backed
+	lastRouted    string        // display name of last provider (for UI)
+	lastRoutedKey string        // map key of last provider (for tool continuation)
+	// Set by LoadPersistedOverrides; main.go drains via TakePendingOpenRouterOverrides
+	// to apply SetModel on each OR-backed provider (needs CapabilityStore).
+	pendingOpenRouterOverrides map[string]string
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
@@ -74,28 +85,66 @@ func NewRouter(providers map[string]Provider, cfg RouterConfig) *Router {
 	}
 }
 
-// SetPersistPath sets the file path for persisting routing overrides.
+// SetPersistPath sets a legacy file path. Used only on first start when the
+// settings store is empty — the file contents are imported and the file is
+// removed. After that all writes go through the settings store.
 func (r *Router) SetPersistPath(path string) {
 	r.mu.Lock()
 	r.persistPath = path
 	r.mu.Unlock()
 }
 
-// LoadPersistedOverrides reads routing overrides from the persist path and applies them.
+// SetSettingsStore wires the DB-backed persistence. Call before LoadPersistedOverrides.
+func (r *Router) SetSettingsStore(s SettingsStore) {
+	r.mu.Lock()
+	r.settings = s
+	r.mu.Unlock()
+}
+
+// LoadPersistedOverrides loads from the settings store. If the store is empty
+// and a legacy file exists at persistPath, it's imported and removed.
 func (r *Router) LoadPersistedOverrides() error {
 	r.mu.RLock()
+	settings := r.settings
 	path := r.persistPath
 	r.mu.RUnlock()
-	if path == "" {
+
+	var data []byte
+	// 1. Prefer the settings store.
+	if settings != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		v, ok, err := settings.GetSetting(ctx, settingsKeyRoutingOverrides)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("load routing overrides: %w", err)
+		}
+		if ok {
+			data = []byte(v)
+		}
+	}
+	// 2. Legacy migration: if store empty and file exists, import it.
+	if len(data) == 0 && path != "" {
+		fileData, err := os.ReadFile(path)
+		if err == nil {
+			data = fileData
+			// Write to store immediately so next start doesn't re-read the file.
+			if settings != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if putErr := settings.PutSetting(ctx, settingsKeyRoutingOverrides, string(fileData)); putErr == nil {
+					// Successfully migrated — remove the legacy file.
+					_ = os.Remove(path)
+					r.logger.Info("migrated routing.json to settings store", "path", path)
+				}
+				cancel()
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if len(data) == 0 {
 		return nil
 	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+
 	var ov routingOverrides
 	if err := json.Unmarshal(data, &ov); err != nil {
 		return err
@@ -123,7 +172,14 @@ func (r *Router) LoadPersistedOverrides() error {
 	if ov.ClassifierMinLen != nil {
 		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
 	}
-	// Restore Ollama Cloud model choice.
+	// Stash OpenRouter model overrides for main.go to apply (needs CapabilityStore).
+	if len(ov.OpenRouterModels) > 0 {
+		r.pendingOpenRouterOverrides = make(map[string]string, len(ov.OpenRouterModels))
+		for k, v := range ov.OpenRouterModels {
+			r.pendingOpenRouterOverrides[k] = v
+		}
+	}
+	// Restore Ollama Cloud model choice (legacy).
 	if ov.OllamaCloudModel != "" {
 		if oc := r.findOllamaCloud(); oc != nil {
 			vision := ov.OllamaCloudVision != nil && *ov.OllamaCloudVision
@@ -133,9 +189,40 @@ func (r *Router) LoadPersistedOverrides() error {
 	return nil
 }
 
-// saveOverrides writes current cfg to the persist path. Must be called with mu held.
+// TakePendingOpenRouterOverrides returns the loaded per-slot model overrides
+// and clears the internal buffer. Call once after LoadPersistedOverrides.
+func (r *Router) TakePendingOpenRouterOverrides() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.pendingOpenRouterOverrides
+	r.pendingOpenRouterOverrides = nil
+	return m
+}
+
+// currentOpenRouterModels collects the current model id of every provider that
+// implements ConfigurableProvider (OR-backed in practice).
+// Must be called with r.mu held.
+func (r *Router) currentOpenRouterModels() map[string]string {
+	out := map[string]string{}
+	for name, p := range r.providers {
+		if cp, ok := p.(ConfigurableProvider); ok {
+			out[name] = cp.CurrentModel()
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// settingsKeyRoutingOverrides is the key under which the JSON blob of routing
+// overrides is stored in the settings store.
+const settingsKeyRoutingOverrides = "routing.overrides"
+
+// saveOverrides writes current cfg via the settings store (preferred) or the
+// legacy file path. Must be called with mu held.
 func (r *Router) saveOverrides() {
-	if r.persistPath == "" {
+	if r.settings == nil && r.persistPath == "" {
 		return
 	}
 	minLen := r.cfg.ClassifierMinLen
@@ -147,6 +234,7 @@ func (r *Router) saveOverrides() {
 		Reasoner:         r.cfg.Reasoner,
 		Classifier:       r.cfg.Classifier,
 		ClassifierMinLen: &minLen,
+		OpenRouterModels: r.currentOpenRouterModels(),
 	}
 	// Include Ollama Cloud model if present.
 	if oc := r.findOllamaCloud(); oc != nil {
@@ -163,6 +251,16 @@ func (r *Router) saveOverrides() {
 	if err != nil {
 		return
 	}
+	if r.settings != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := r.settings.PutSetting(ctx, settingsKeyRoutingOverrides, string(data)); err != nil {
+			r.logger.Error("failed to save routing overrides", "err", err)
+			return
+		}
+		r.logger.Info("routing overrides saved")
+		return
+	}
 	if err := os.WriteFile(r.persistPath, data, 0644); err != nil {
 		r.logger.Error("failed to save routing overrides", "path", r.persistPath, "err", err)
 	} else {
@@ -175,6 +273,25 @@ func (r *Router) GetConfig() RouterConfig {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.cfg
+}
+
+// SetProviderModel swaps the underlying model id of a provider slot and
+// persists the choice. Returns an error if the slot does not exist or does
+// not support runtime reconfiguration.
+func (r *Router) SetProviderModel(slot, modelID string, caps Capabilities) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providers[slot]
+	if !ok {
+		return errors.New("unknown slot: " + slot)
+	}
+	cp, ok := p.(ConfigurableProvider)
+	if !ok {
+		return errors.New("slot is not reconfigurable: " + slot)
+	}
+	cp.SetModel(modelID, caps)
+	r.saveOverrides()
+	return nil
 }
 
 // SetRole updates a routing role to point at the given model name.

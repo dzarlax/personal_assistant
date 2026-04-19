@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"telegram-agent/internal/config"
 )
@@ -26,10 +27,80 @@ func (e *APIError) Error() string {
 type openAICompatProvider struct {
 	baseURL   string
 	apiKey    string
-	model     string
 	maxTokens int
 	provName  string
-	vision    bool // if false, image_url parts in history are replaced with [image]
+
+	// Mutable state protected by mu: model id, capabilities, vision flag.
+	// OpenRouter updates these via SetModel at runtime when the admin UI
+	// reassigns a slot; in-flight requests keep the snapshot they captured.
+	mu      sync.RWMutex
+	model   string
+	caps    Capabilities
+	vision  bool // if false, image_url parts in history are replaced with [image]
+
+	// Optional per-provider extensions. Used by OpenRouter to set
+	// HTTP-Referer/X-Title headers and provider/usage routing fields.
+	extraHeaders    map[string]string
+	extraBodyFields map[string]any
+}
+
+// snapshot captures mutable fields under the lock for a single request.
+func (p *openAICompatProvider) snapshot() (model string, vision bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.model, p.vision
+}
+
+// Capabilities returns the current model's capabilities (may be zero-value
+// when the store hasn't been queried or provider lacks a /models endpoint).
+func (p *openAICompatProvider) Capabilities() Capabilities {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.caps
+}
+
+// SetModel swaps the model id and its capabilities atomically. Subsequent
+// requests use the new id; in-flight requests are unaffected.
+// Vision flag is derived from caps; callers can override by calling SetVision after.
+func (p *openAICompatProvider) SetModel(modelID string, caps Capabilities) {
+	p.mu.Lock()
+	p.model = modelID
+	p.caps = caps
+	p.vision = caps.Vision
+	p.mu.Unlock()
+}
+
+// CurrentModel returns the currently active model id.
+func (p *openAICompatProvider) CurrentModel() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.model
+}
+
+// mergeExtraBody merges provider-specific fields into a marshalled chat request.
+// Returns the original body unchanged when there are no extras.
+func (p *openAICompatProvider) mergeExtraBody(body []byte) ([]byte, error) {
+	if len(p.extraBodyFields) == 0 {
+		return body, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range p.extraBodyFields {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		m[k] = raw
+	}
+	return json.Marshal(m)
+}
+
+func (p *openAICompatProvider) applyExtraHeaders(req *http.Request) {
+	for k, v := range p.extraHeaders {
+		req.Header.Set(k, v)
+	}
 }
 
 func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string, vision ...bool) (*openAICompatProvider, error) {
@@ -138,9 +209,10 @@ type rawChatResponse struct {
 }
 
 func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
-	rawMsgs := buildMessages(messages, systemPrompt, p.vision)
+	model, vision := p.snapshot()
+	rawMsgs := buildMessages(messages, systemPrompt, vision)
 	req := rawChatRequest{
-		Model:     p.model,
+		Model:     model,
 		Messages:  rawMsgs,
 		MaxTokens: p.maxTokens,
 	}
@@ -152,6 +224,10 @@ func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, sys
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: marshal request: %w", p.provName, err)
 	}
+	body, err = p.mergeExtraBody(body)
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: merge extra body: %w", p.provName, err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -159,6 +235,7 @@ func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, sys
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	p.applyExtraHeaders(httpReq)
 
 	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -199,10 +276,12 @@ func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, sys
 }
 
 func (p *openAICompatProvider) Name() string {
-	return p.provName + "/" + p.model
+	return p.provName + "/" + p.CurrentModel()
 }
 
 func (p *openAICompatProvider) SupportsVision() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.vision
 }
 
@@ -294,9 +373,10 @@ func buildTools(tools []Tool) []rawTool {
 
 // ChatStream opens an SSE stream to the OpenAI-compatible API and returns chunks via a channel.
 func (p *openAICompatProvider) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
-	rawMsgs := buildMessages(messages, systemPrompt, p.vision)
+	model, vision := p.snapshot()
+	rawMsgs := buildMessages(messages, systemPrompt, vision)
 	req := rawChatRequest{
-		Model:     p.model,
+		Model:     model,
 		Messages:  rawMsgs,
 		MaxTokens: p.maxTokens,
 		Stream:    true,
@@ -309,6 +389,10 @@ func (p *openAICompatProvider) ChatStream(ctx context.Context, messages []Messag
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal request: %w", p.provName, err)
 	}
+	body, err = p.mergeExtraBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: merge extra body: %w", p.provName, err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -316,6 +400,7 @@ func (p *openAICompatProvider) ChatStream(ctx context.Context, messages []Messag
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	p.applyExtraHeaders(httpReq)
 
 	httpResp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

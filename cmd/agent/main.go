@@ -56,54 +56,48 @@ func main() {
 	}
 
 	// All providers are optional — at least the one referenced by routing.default must be present.
-	if cfg.Models.DeepSeek.APIKey != "" {
-		p, e := llm.NewDeepSeek(cfg.Models.DeepSeek)
-		addProvider("deepseek", p, e)
-	}
-	if cfg.Models.DeepSeekR1.APIKey != "" {
-		p, e := llm.NewDeepSeek(cfg.Models.DeepSeekR1)
-		addProvider("deepseek-r1", p, e)
-	}
-	if cfg.Models.GeminiFlashLite.APIKey != "" {
-		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlashLite)
-		addProvider("gemini-flash-lite", p, e)
-	}
-	if cfg.Models.GeminiFlash.APIKey != "" {
-		p, e := llm.NewGeminiNative(cfg.Models.GeminiFlash)
-		addProvider("gemini-flash", p, e)
-	}
-	if cfg.Models.QwenFlash.APIKey != "" {
-		p, e := llm.NewQwen(cfg.Models.QwenFlash)
-		addProvider("qwen-flash", p, e)
-	}
-	if cfg.Models.QwenPlus.APIKey != "" {
-		p, e := llm.NewQwen(cfg.Models.QwenPlus)
-		addProvider("qwen3.5-plus", p, e)
-	}
-	if cfg.Models.QwenMax.APIKey != "" {
-		p, e := llm.NewQwen(cfg.Models.QwenMax)
-		addProvider("qwen-max", p, e)
-	}
-	if cfg.Models.Ollama.Model != "" {
-		p, e := llm.NewOllama(cfg.Models.Ollama)
-		addProvider("ollama", p, e)
-	}
-	if cfg.Models.OllamaLocal.Model != "" {
-		p, e := llm.NewOllama(cfg.Models.OllamaLocal)
-		addProvider("ollama-local", p, e)
-	}
-	if cfg.Models.OllamaCloud.Model != "" {
-		p, e := llm.NewOllama(cfg.Models.OllamaCloud)
-		addProvider("ollama-cloud", p, e)
-		llm.InitCloudModelCache("config/ollama_cloud_cache.json")
-	}
-	if cfg.Models.Claude.BaseURL != "" {
-		p, e := llm.NewClaudeBridge(cfg.Models.Claude)
-		addProvider("claude", p, e)
-	}
-	if cfg.Models.Local.BaseURL != "" {
-		p, e := llm.NewLocal(cfg.Models.Local)
-		addProvider("local", p, e)
+	// Dispatch each models.* entry by its `provider` field. The special key
+	// "embedding" is reserved for the MCP embedding provider (handled below).
+	for name, mc := range cfg.Models {
+		if name == "embedding" {
+			continue
+		}
+		switch mc.Provider {
+		case "openrouter":
+			if mc.APIKey == "" || mc.Model == "" {
+				continue
+			}
+			p, e := llm.NewOpenRouter(mc)
+			addProvider(name, p, e)
+		case "gemini":
+			if mc.APIKey == "" {
+				continue
+			}
+			p, e := llm.NewGeminiNative(mc)
+			addProvider(name, p, e)
+		case "ollama":
+			if mc.Model == "" {
+				continue
+			}
+			p, e := llm.NewOllama(mc)
+			addProvider(name, p, e)
+		case "claude-bridge":
+			if mc.BaseURL == "" {
+				continue
+			}
+			p, e := llm.NewClaudeBridge(mc)
+			addProvider(name, p, e)
+		case "local":
+			if mc.BaseURL == "" {
+				continue
+			}
+			p, e := llm.NewLocal(mc)
+			addProvider(name, p, e)
+		case "":
+			logger.Warn("model entry has no provider — skipped", "model", name)
+		default:
+			logger.Warn("unknown provider — skipped", "model", name, "provider", mc.Provider)
+		}
 	}
 
 	// Ensure the default routing provider is available.
@@ -113,19 +107,18 @@ func main() {
 	}
 	primary := providers[cfg.Routing.Default]
 
-	// Default role keys if not specified
+	// Default role keys fall through to routing.default when unspecified.
 	multimodalKey := cfg.Routing.Multimodal
 	if multimodalKey == "" {
-		multimodalKey = "gemini-flash"
+		multimodalKey = cfg.Routing.Default
 	}
 	reasonerKey := cfg.Routing.Reasoner
 	if reasonerKey == "" {
-		reasonerKey = "deepseek-r1"
+		reasonerKey = cfg.Routing.Default
 	}
-
 	localKey := cfg.Routing.Local
 	if localKey == "" {
-		localKey = "ollama-local"
+		localKey = cfg.Routing.Default
 	}
 
 	router := llm.NewRouter(providers, llm.RouterConfig{
@@ -182,10 +175,24 @@ func main() {
 		}
 	}
 
-	// Persist routing overrides across restarts
+	// Hydrate OpenRouter capabilities: one fetch of /api/v1/models, upsert to
+	// CapabilityStore, then apply caps to each OR-backed provider so the router
+	// can make vision/tool-aware decisions.
+	hydrateOpenRouterCapabilities(cfg, providers, s, logger)
+
+	// Persist routing overrides across restarts via the DB settings store.
+	// The legacy file path is kept only for one-time migration on first start.
+	if ss, ok := s.(llm.SettingsStore); ok {
+		router.SetSettingsStore(ss)
+	}
 	router.SetPersistPath("config/routing.json")
 	if err := router.LoadPersistedOverrides(); err != nil {
 		logger.Warn("failed to load routing overrides", "err", err)
+	}
+	// Apply persisted per-slot OpenRouter model overrides (e.g. admin UI picked
+	// a different model last session). Pull caps from the store.
+	if orOverrides := router.TakePendingOpenRouterOverrides(); len(orOverrides) > 0 {
+		applyOpenRouterOverrides(router, s, orOverrides, logger)
 	}
 
 	// Init compacter — use the effective primary after overrides are loaded.
@@ -211,8 +218,8 @@ func main() {
 		mcpClient.Initialize(initCtx)
 		cancel()
 
-		if cfg.ToolFilter.TopK > 0 && (cfg.Models.Embedding.APIKey != "" || cfg.Models.Embedding.BaseURL != "") {
-			mcpClient.EnableEmbeddings(cfg.Models.Embedding, cfg.ToolFilter.TopK)
+		if emb, ok := cfg.Models["embedding"]; ok && cfg.ToolFilter.TopK > 0 && (emb.APIKey != "" || emb.BaseURL != "") {
+			mcpClient.EnableEmbeddings(emb, cfg.ToolFilter.TopK)
 			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			mcpClient.EmbedTools(embedCtx)
 			embedCancel()
@@ -221,25 +228,32 @@ func main() {
 
 	ag := agent.New(router, s, mcpClient, compacter, string(sysPromptBytes), logger)
 
-	// Enable voice transcription if a multimodal Gemini model is configured.
-	if cfg.Models.GeminiFlash.APIKey != "" && cfg.Models.GeminiFlash.Model != "" {
+	// Enable voice transcription using whichever model serves routing.multimodal
+	// (that's the vision/audio-capable model by design — same applies to audio).
+	if mm, ok := cfg.Models[cfg.Routing.Multimodal]; ok && mm.Provider == "gemini" && mm.APIKey != "" && mm.Model != "" {
 		ag.EnableTranscription(agent.TranscribeConfig{
-			Model:  cfg.Models.GeminiFlash.Model,
-			APIKey: cfg.Models.GeminiFlash.APIKey,
+			Model:  mm.Model,
+			APIKey: mm.APIKey,
 		})
-		logger.Info("voice transcription enabled", "model", cfg.Models.GeminiFlash.Model)
+		logger.Info("voice transcription enabled", "model", mm.Model)
 	}
 
 	if cfg.WebSearch.Enabled {
-		baseURL := cfg.WebSearch.BaseURL
-		if baseURL == "" {
-			baseURL = "https://ollama.com"
+		provider := cfg.WebSearch.Provider
+		if provider == "" {
+			provider = "ollama"
 		}
 		ag.EnableWebSearch(agent.WebSearchConfig{
-			BaseURL: baseURL,
-			APIKey:  cfg.WebSearch.APIKey,
+			Provider: provider,
+			BaseURL:  cfg.WebSearch.BaseURL,
+			APIKey:   cfg.WebSearch.APIKey,
 		})
-		logger.Info("web search enabled", "base_url", baseURL)
+		logger.Info("web search enabled", "provider", provider)
+	}
+
+	if cfg.WebFetch.Enabled {
+		ag.EnableWebFetch(agent.WebFetchConfig{CDPURL: cfg.WebFetch.CDPURL})
+		logger.Info("web fetch enabled", "cdp_fallback", cfg.WebFetch.CDPURL != "")
 	}
 
 	if cfg.Filesystem.Enabled {
@@ -305,4 +319,92 @@ func main() {
 		mcpClient.Close()
 	}
 	logger.Info("agent stopped")
+}
+
+// applyOpenRouterOverrides applies persisted per-slot model overrides to
+// OR-backed providers. Capabilities come from the CapabilityStore; slots with
+// unknown caps are still applied with zero-value caps (vision-aware routing
+// will then treat them as text-only, which is the safer default).
+func applyOpenRouterOverrides(router *llm.Router, s store.Store, overrides map[string]string, logger *slog.Logger) {
+	capStore, _ := s.(llm.CapabilityStore)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for slot, modelID := range overrides {
+		var caps llm.Capabilities
+		if capStore != nil {
+			if c, ok, err := capStore.GetCapabilities(ctx, "openrouter", modelID); err == nil && ok {
+				caps = c
+			}
+		}
+		if err := router.SetProviderModel(slot, modelID, caps); err != nil {
+			logger.Warn("failed to apply OR override", "slot", slot, "model", modelID, "err", err)
+			continue
+		}
+		logger.Info("applied OR model override", "slot", slot, "model", modelID,
+			"vision", caps.Vision, "tools", caps.Tools)
+	}
+}
+
+// hydrateOpenRouterCapabilities runs once at startup. It fetches
+// /api/v1/models using the first OpenRouter API key it finds, upserts every
+// returned model into the CapabilityStore (if the store supports it), and
+// applies the caps to each OpenRouter-backed provider by its current model id.
+// On fetch failure, it falls back to whatever is cached in the store.
+func hydrateOpenRouterCapabilities(cfg *config.Config, providers map[string]llm.Provider, s store.Store, logger *slog.Logger) {
+	var apiKey string
+	for _, mc := range cfg.Models {
+		if mc.Provider == "openrouter" && mc.APIKey != "" {
+			apiKey = mc.APIKey
+			break
+		}
+	}
+	if apiKey == "" {
+		return
+	}
+
+	capStore, _ := s.(llm.CapabilityStore)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	caps, err := llm.FetchOpenRouterModels(ctx, apiKey)
+	if err != nil {
+		logger.Warn("openrouter /models fetch failed; using cached capabilities", "err", err)
+		if capStore != nil {
+			cached, cErr := capStore.GetAllCapabilities(ctx, "openrouter")
+			if cErr != nil {
+				logger.Warn("failed to load cached capabilities", "err", cErr)
+				return
+			}
+			caps = cached
+		} else {
+			return
+		}
+	} else if capStore != nil {
+		for id, c := range caps {
+			if putErr := capStore.PutCapabilities(ctx, "openrouter", id, c); putErr != nil {
+				logger.Warn("cache put failed", "model", id, "err", putErr)
+			}
+		}
+		logger.Info("openrouter capabilities cached", "count", len(caps))
+	}
+
+	// Apply caps to each OR-backed provider.
+	for name, mc := range cfg.Models {
+		if mc.Provider != "openrouter" {
+			continue
+		}
+		p, ok := providers[name]
+		if !ok {
+			continue
+		}
+		cp, ok := p.(llm.ConfigurableProvider)
+		if !ok {
+			continue
+		}
+		cur := cp.CurrentModel()
+		if c, found := caps[cur]; found {
+			cp.SetModel(cur, c)
+		}
+	}
 }

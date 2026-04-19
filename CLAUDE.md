@@ -86,7 +86,8 @@ flowchart LR
 - `getHistory(chatID, queryEmb)` — uses `SemanticStore.GetSemanticHistory(chatID, emb, 10, 20)` when embedding available; falls back to `GetHistory`
 - `GetStats(chatID) (store.ChatStats, bool)` — type-asserts store to `CompactableStore`
 - `cache.go` — `ResponseCache`: in-memory LLM response cache keyed by query embedding. `Get(chatID, emb)` returns hit if cosine ≥ 0.92 and not expired. `Set(chatID, emb, response)` stores entry; evicts expired on write, then oldest if at capacity. TTL=4h, maxSize=200. Checked before LLM call; only pure direct responses (first iteration, no tool calls) are cached.
-- `websearch.go` — Ollama web search built-in tool. `callWebSearch(ctx, cfg, argsJSON)` calls `/api/web_search` with Bearer auth. Returns formatted results (title, URL, content snippet). Registered as `web_search` tool visible to any LLM. Agent dispatches via `callTool()` which checks built-in tools before forwarding to MCP.
+- `websearch.go` — built-in `web_search` tool with provider dispatch. `callWebSearch(ctx, cfg, argsJSON)` routes by `cfg.Provider`: `"ollama"` (default, legacy) calls `POST /api/web_search` on Ollama Cloud; `"tavily"` calls `POST /search` on `api.tavily.com` with `search_depth: basic` (1 credit/call) and `include_answer: true` — prepends Tavily's answer summary to source list. Returns formatted results (title, URL, content snippet). Registered as `web_search` tool visible to any LLM. `callWebSearchCached` wraps the call: embeds the query, checks `webSearchCache` (global, TTL 6h, cosine ≥ 0.95, max 100 entries) before hitting the provider; stores successful results for reuse. Same cache is shared with `web_fetch`.
+- `webfetch.go` — built-in `web_fetch` tool. Primary path: `fetchViaHTTP` does HTTP GET + `go-shiori/go-readability` to extract main text. Fallback: when the primary fails or returns < 200 chars AND `CDPURL` is configured, `fetchViaCDP` connects to a headless Chrome via CDP (`chromedp.NewRemoteAllocator`), navigates, grabs outer HTML, re-parses with readability. Output capped at 8000 chars. `callWebFetchCached` shares `webSearchCache` keyed by URL embedding. No external paid API — only cost is container resources.
 - `compact.go` — token-based threshold: 16 000 estimated tokens. Fast pre-check at 32 000 chars. `EstimateTokens`: `len(Content)/4` + text parts `/4` + images `×1000`. **Semantic compaction**: `GetAllActive` now populates `MessageRow.Embedding`; if embeddings are present, `clusterByEmbedding` groups turns into topic clusters (greedy cosine, threshold 0.65) and each cluster is summarised separately — results joined with `---`. Falls back to single-pass when no embeddings or only one cluster.
 
 **`internal/telegram`** — Telegram Bot API handler.
@@ -201,12 +202,56 @@ Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → respo
 - `scripts/init-context.sh` creates the project context directory with CLAUDE.md, settings.json, and MCP config symlink
 - `scripts/setup.sh --with-claude /path` — full setup: context dir, build/download bridge binary, generate auth token
 
-### Adding a new LLM provider
+### Model config structure
 
-1. Implement `llm.Provider` interface (or reuse `openai_compat.go` if OpenAI-compatible)
-2. Add `ModelConfig` with `base_url` to `config.yaml` and `ModelsConfig` struct
-3. Wire in `main.go` with `if cfg.Models.X.APIKey != "" { addProvider("key", ...) }` (for local models without API key, check `BaseURL` instead)
-4. Set as `routing.default` or a routing role
+`models:` in `config.yaml` is a **map** (`type ModelsConfig map[string]ModelConfig` in `internal/config/config.go`). Each entry's YAML key becomes its routing name (referenced from `routing.default`, `routing.reasoner`, etc.). The entry's `provider` field selects the backend: `openrouter`, `gemini`, `ollama`, `claude-bridge`, `local` for LLMs; `hf-tei`, `openai` for embeddings. The special key `embedding` is reserved for the MCP embedding provider and is not registered as an LLM.
+
+`cmd/agent/main.go` iterates the map once at startup, dispatching each entry by `provider` to the matching `llm.New*` constructor. An entry with an unknown or empty `provider` is warned and skipped. This means you can define as many OpenRouter (or any other) models as you want — e.g. `workhorse`, `reasoner-or`, `cheap-or` — and wire each to a different `routing.*` role without any Go changes.
+
+### Adding a new LLM provider backend
+
+1. Implement `llm.Provider` (or reuse `openai_compat.go` if the upstream is OpenAI-compatible — see `NewOpenRouter` for the pattern, including `extraHeaders`/`extraBodyFields` for vendor-specific extensions)
+2. Add a `case "your-provider":` arm to the dispatch switch in `cmd/agent/main.go`
+3. Add model entries under `models:` in `config.yaml` with `provider: your-provider`
+4. Reference the entry key from `routing.*`
+
+### OpenRouter specifics (`internal/llm/openrouter.go`)
+
+`NewOpenRouter` sets three extensions on every request via the generic `extraHeaders`/`extraBodyFields` mechanism added to `openAICompatProvider`:
+- Headers: `HTTP-Referer` + `X-Title` (app attribution; improves rate-limit standing)
+- `usage.include: true` (returns token counts in the response)
+- `provider.require_parameters: true` + `allow_fallbacks: true` (only routes to upstream providers that support the request's params — including tool calling — and transparently retries on another upstream if the first fails)
+
+To target a specific OpenRouter model per routing role, add multiple entries with `provider: openrouter` and different `model:` values; each becomes a provider key in main.go.
+
+### Model capabilities (`internal/llm/capabilities.go`)
+
+`Capabilities{Vision, Tools, Reasoning, PromptPrice, CompletionPrice, ContextLength}` describes what a specific model id supports and what it costs. Two interfaces plug into this:
+- `CapabilityProvider` — optional method `Capabilities() Capabilities` on an LLM provider. The router calls `supportsVision(p)` which type-asserts to `VisionProvider` (a subset); when an OR-backed provider's caps are populated, its `vision` flag reflects `caps.Vision` and the existing routing logic picks the multimodal fallback automatically.
+- `ConfigurableProvider` — optional methods `SetModel(id, caps)` + `CurrentModel()`. `openAICompatProvider` implements both; `SetModel` atomically swaps the model id, caps, and derived vision flag under `p.mu`. Used by the admin UI (Phase 2) for runtime model swaps.
+
+`FetchOpenRouterModels(ctx, apiKey)` hits `GET https://openrouter.ai/api/v1/models` and parses each model's `architecture.input_modalities`, `supported_parameters`, `pricing`, and `context_length`. Prices are normalised from USD/token to USD/million tokens.
+
+Persistence: the SQLite and Postgres stores each implement `llm.CapabilityStore` with methods `GetCapabilities` / `PutCapabilities` / `GetAllCapabilities` against a `model_capabilities` table (primary key `(provider, model_id)`). The Postgres `migrate()` runs `CREATE TABLE IF NOT EXISTS` at connect time; SQLite inlines it in `sqliteSchema`. Run `go test -run Capabilities ./...` to exercise both the parser and the store.
+
+### Startup capability hydration
+
+`hydrateOpenRouterCapabilities` in `cmd/agent/main.go` runs once right after store init and before routing-override load:
+1. Picks the first OR-backed `cfg.Models` entry with an API key
+2. Calls `FetchOpenRouterModels` (30s timeout)
+3. On success — upserts every returned entry into `CapabilityStore`
+4. On failure — falls back to whatever `GetAllCapabilities("openrouter")` returns from the store
+5. For each `cfg.Models` entry with `provider: openrouter`, calls `cp.SetModel(currentModel, caps)` on its provider so the router sees accurate vision/tool flags from the very first request
+
+### Runtime model swaps
+
+Admin UI flow (Phase 2, not built yet): `Router.SetProviderModel(slot, modelID, caps)` → the router type-asserts `providers[slot]` to `ConfigurableProvider`, calls `SetModel`, then `saveOverrides()` writes the current OR model per slot into the settings store under `openrouter_models: {slot: model_id}`. On startup, `Router.TakePendingOpenRouterOverrides()` returns the loaded map which `applyOpenRouterOverrides` in main.go re-applies with caps from the capability store. Unknown model ids persist with zero caps (safer default — vision-aware routing treats them as text-only).
+
+### Persistent settings (`kv_settings`)
+
+`llm.SettingsStore` is a generic key-value interface (`GetSetting` / `PutSetting`) backed by a `kv_settings (key PK, value, updated_at)` table in both SQLite and Postgres. Router stores routing overrides here under the `routing.overrides` key as a JSON blob.
+
+**Legacy migration:** `Router.SetPersistPath("config/routing.json")` still wires up the old file path. On first start, `LoadPersistedOverrides` imports the file into the settings store and deletes it; subsequent starts read only from the store. The file path can be removed from deployments after the first successful run, but leaving it is harmless.
 
 ### Adding multimodal content types
 

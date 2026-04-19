@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 
 	"telegram-agent/internal/llm"
@@ -174,5 +175,118 @@ func TestSQLite_HistoryLimitedTo30(t *testing.T) {
 	history := s.GetHistory(chatID)
 	if len(history) != sqliteMaxHistory {
 		t.Errorf("expected %d messages (limit), got %d", sqliteMaxHistory, len(history))
+	}
+}
+
+// TestSQLite_Capabilities: put → get round-trip and list by provider.
+func TestSQLite_Capabilities(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	in := llm.Capabilities{
+		Vision:          true,
+		Tools:           true,
+		Reasoning:       false,
+		PromptPrice:     3.0,
+		CompletionPrice: 15.0,
+		ContextLength:   200000,
+	}
+	if err := s.PutCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5", in); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	got, ok, err := s.GetCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !ok {
+		t.Fatal("capabilities not found after put")
+	}
+	if got != in {
+		t.Errorf("roundtrip mismatch:\n want %+v\n got  %+v", in, got)
+	}
+
+	// Missing entry → (_, false, nil)
+	_, ok, err = s.GetCapabilities(ctx, "openrouter", "nonexistent/model")
+	if err != nil {
+		t.Fatalf("get missing: %v", err)
+	}
+	if ok {
+		t.Error("expected ok=false for missing entry")
+	}
+
+	// Second entry — verify GetAll returns both and filters by provider.
+	other := llm.Capabilities{Tools: true, PromptPrice: 0.27, CompletionPrice: 1.10, ContextLength: 65536}
+	if err := s.PutCapabilities(ctx, "openrouter", "deepseek/deepseek-chat-v3.1", other); err != nil {
+		t.Fatalf("put 2: %v", err)
+	}
+	// Entry under a different provider that GetAll must NOT return.
+	if err := s.PutCapabilities(ctx, "other-provider", "foo/bar", llm.Capabilities{}); err != nil {
+		t.Fatalf("put other: %v", err)
+	}
+
+	all, err := s.GetAllCapabilities(ctx, "openrouter")
+	if err != nil {
+		t.Fatalf("getall: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("want 2 openrouter entries, got %d", len(all))
+	}
+	if _, ok := all["anthropic/claude-sonnet-4.5"]; !ok {
+		t.Error("missing claude entry")
+	}
+	if _, ok := all["deepseek/deepseek-chat-v3.1"]; !ok {
+		t.Error("missing deepseek entry")
+	}
+
+	// Upsert semantics — same key, new values overwrite.
+	updated := in
+	updated.PromptPrice = 5.0
+	if err := s.PutCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5", updated); err != nil {
+		t.Fatalf("put update: %v", err)
+	}
+	got, _, _ = s.GetCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5")
+	if got.PromptPrice != 5.0 {
+		t.Errorf("upsert did not overwrite: got %v", got.PromptPrice)
+	}
+}
+
+// TestSQLite_Settings: kv round-trip + upsert semantics.
+func TestSQLite_Settings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Missing key → (_, false, nil)
+	_, ok, err := s.GetSetting(ctx, "routing.overrides")
+	if err != nil {
+		t.Fatalf("get missing: %v", err)
+	}
+	if ok {
+		t.Error("expected ok=false for missing key")
+	}
+
+	payload := `{"primary":"workhorse","openrouter_models":{"workhorse":"deepseek/deepseek-chat-v3.1"}}`
+	if err := s.PutSetting(ctx, "routing.overrides", payload); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, ok, err := s.GetSetting(ctx, "routing.overrides")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !ok {
+		t.Fatal("setting not found after put")
+	}
+	if got != payload {
+		t.Errorf("roundtrip mismatch: got %q want %q", got, payload)
+	}
+
+	// Upsert
+	newPayload := `{"primary":"cheap-or"}`
+	if err := s.PutSetting(ctx, "routing.overrides", newPayload); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _, _ = s.GetSetting(ctx, "routing.overrides")
+	if got != newPayload {
+		t.Errorf("upsert did not overwrite: got %q", got)
 	}
 }

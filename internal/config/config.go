@@ -28,15 +28,22 @@ type Config struct {
 	Routing    RoutingConfig    `yaml:"routing"`
 	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
 	WebSearch  WebSearchConfig  `yaml:"web_search"`
+	WebFetch   WebFetchConfig   `yaml:"web_fetch"`
 	Filesystem FilesystemConfig `yaml:"filesystem"`
 	TTS        TTSConfig        `yaml:"tts"`
 	VoiceAPI   VoiceAPIConfig   `yaml:"voice_api"`
 }
 
 type WebSearchConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Provider string `yaml:"provider"` // "ollama" (default) or "tavily"
+	BaseURL  string `yaml:"base_url"` // optional override; provider-specific default applies
+	APIKey   string `yaml:"api_key"`
+}
+
+type WebFetchConfig struct {
 	Enabled bool   `yaml:"enabled"`
-	BaseURL string `yaml:"base_url"` // default: https://ollama.com
-	APIKey  string `yaml:"api_key"`
+	CDPURL  string `yaml:"cdp_url"` // optional headless Chrome (CDP) URL for fallback
 }
 
 type ToolFilterConfig struct {
@@ -88,21 +95,13 @@ type ModelConfig struct {
 	KeepAlive int    `yaml:"keep_alive"` // seconds to keep model in memory; -1 = forever; 0 = provider default
 }
 
-type ModelsConfig struct {
-	DeepSeek        ModelConfig `yaml:"deepseek"`
-	DeepSeekR1      ModelConfig `yaml:"deepseek-r1"`
-	GeminiFlashLite ModelConfig `yaml:"gemini-flash-lite"`
-	GeminiFlash     ModelConfig `yaml:"gemini-flash"`
-	Embedding       ModelConfig `yaml:"embedding"`
-	QwenFlash       ModelConfig `yaml:"qwen-flash"`
-	QwenPlus        ModelConfig `yaml:"qwen3.5-plus"`
-	QwenMax         ModelConfig `yaml:"qwen-max"`
-	Ollama          ModelConfig `yaml:"ollama"`
-	OllamaLocal     ModelConfig `yaml:"ollama-local"`
-	OllamaCloud     ModelConfig `yaml:"ollama-cloud"`
-	Claude          ModelConfig `yaml:"claude"`
-	Local           ModelConfig `yaml:"local"`
-}
+// ModelsConfig is a free-form map of model name → provider config. The key is
+// the model's routing name (referenced from routing.*, e.g. "workhorse"), and
+// the entry's Provider field selects the backend implementation
+// ("openrouter", "gemini", "ollama", "claude-bridge", "local", "hf-tei",
+// "openai"). The special key "embedding" is reserved for the MCP embedding
+// provider and is not registered as an LLM.
+type ModelsConfig map[string]ModelConfig
 
 
 type RoutingConfig struct {
