@@ -386,11 +386,51 @@ esphome run atom-echo.yaml            # compile + flash via USB
 | `/model reset` | Back to auto-routing |
 | `/claude <question>` | Enter Claude mode — sends question via Claude Bridge |
 | `/exit` | Exit Claude mode, back to auto-routing |
-| `/routing` | Configure routing roles permanently via inline keyboard |
+| `/routing` | Configure routing roles permanently via inline keyboard. Appends an "Open Admin UI" button when `admin_api.base_url` is set. |
 | `/tools` | List connected MCP tools grouped by server |
 | `/help` | Show help |
 
-> **Note:** `/model` is a temporary session override — it resets on restart. To permanently change the primary model use `/routing` or edit `config/config.yaml`.
+> **Note:** `/model` is a temporary session override — it resets on restart. To permanently change the primary model use `/routing` or the [Admin UI](#admin-web-ui).
+
+## Admin web UI
+
+Optional web interface for browsing OpenRouter's full model catalog, filtering by price / capabilities (Free / Vision / Tools / Reasoning), and assigning any model to a slot with a click. Also edits routing roles (default, reasoner, multimodal, fallback, classifier).
+
+Enable by setting `admin_api.enabled: true` in `config.yaml` and providing a token or forward-auth setup:
+
+```yaml
+admin_api:
+  enabled: true
+  listen: ":8087"
+  token: ${ADMIN_API_TOKEN}
+  trust_forward_auth: true               # when behind Traefik/Authentik
+  forward_auth_header: X-authentik-username
+  base_url: https://assistant.example.com   # surfaced in Telegram /routing
+```
+
+Stack: Go stdlib HTTP + htmx + [dzarlax design system](https://github.com/dzarlax/design-system), everything embedded into the binary via `go:embed`. Static assets (CSS + JS) are re-downloaded on every CI build so the design system stays fresh (`ARG ASSETS_CACHEBUST` in Dockerfile).
+
+Auth precedence:
+1. **Authentik forward-auth** — when `trust_forward_auth: true` and the upstream middleware sets `X-authentik-username` (or the configured header), the request is authenticated.
+2. **Cookie** `admin_auth` — set automatically after a bootstrap `?token=<ADMIN_API_TOKEN>` visit.
+3. **Bearer token** — `Authorization: Bearer <ADMIN_API_TOKEN>` for `curl` / monitoring.
+4. Otherwise 401.
+
+Deployment recipe (behind Traefik + Authentik):
+
+```yaml
+# docker-compose.yml
+labels:
+  - "traefik.enable=true"
+  - "traefik.http.routers.assistant-admin.entrypoints=https"
+  - "traefik.http.routers.assistant-admin.rule=Host(`assistant.example.com`)"
+  - "traefik.http.routers.assistant-admin.tls=true"
+  - "traefik.http.routers.assistant-admin.tls.certresolver=letsEncrypt"
+  - "traefik.http.routers.assistant-admin.middlewares=authentik-auth"
+  - "traefik.http.services.assistant-admin.loadbalancer.server.port=8087"
+```
+
+Pair with an Authentik **Application + Provider (Proxy)** configured to protect the route; restrict access via policy binding to a `admins` group or similar.
 
 ## LLM Routing
 

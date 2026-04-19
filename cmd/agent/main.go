@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"telegram-agent/internal/adminapi"
 	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
@@ -284,6 +285,9 @@ func main() {
 		logger.Error("failed to init Telegram handler", "err", err)
 		os.Exit(1)
 	}
+	if cfg.AdminAPI.Enabled && cfg.AdminAPI.BaseURL != "" {
+		handler.SetAdminBaseURL(cfg.AdminAPI.BaseURL)
+	}
 
 	if cfg.VoiceAPI.Enabled {
 		voiceSrv := voiceapi.New(ag, cfg.VoiceAPI, logger)
@@ -293,6 +297,20 @@ func main() {
 			}
 		}()
 		defer voiceSrv.Shutdown(context.Background())
+	}
+
+	if cfg.AdminAPI.Enabled {
+		capStore, _ := s.(llm.CapabilityStore)
+		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, cfg, logger)
+		if err := adminSrv.Start(); err != nil {
+			logger.Error("admin API failed to start", "err", err)
+		} else {
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = adminSrv.Shutdown(ctx)
+			}()
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

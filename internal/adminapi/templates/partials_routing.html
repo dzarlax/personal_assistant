@@ -1,0 +1,36 @@
+{{define "routing_section"}}
+<div class="card">
+  <div class="card__header"><strong>Routing</strong></div>
+  <div class="card__body">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Role</th><th>Slot (model)</th></tr>
+        </thead>
+        <tbody>
+          {{range .Roles}}
+          <tr>
+            <td><code>{{.Name}}</code></td>
+            <td>
+              <form hx-post="/routing/{{.Name}}/set"
+                    hx-target="#routing-section"
+                    hx-swap="outerHTML"
+                    style="display:inline-flex;gap:0.5rem;align-items:center;">
+                <select class="form-select" name="slot" style="min-width:12rem;">
+                  {{$current := .Current}}
+                  {{range $.AllSlots}}
+                  <option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+                  {{end}}
+                </select>
+                <button class="btn btn--small btn--primary" type="submit">Set</button>
+              </form>
+              {{with .ModelID}}<span class="model-id" style="margin-left:0.5rem;color:var(--text-secondary);">→ {{.}}</span>{{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{{end}}

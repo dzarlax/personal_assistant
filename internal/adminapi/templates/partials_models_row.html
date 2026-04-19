@@ -1,0 +1,35 @@
+{{define "models_tbody"}}
+<tbody id="models-tbody">
+  {{range .Models}}
+  {{$modelID := .ID}}
+  <tr>
+    <td>
+      <div class="model-id">{{.ID}}</div>
+      <div class="assign-buttons">
+        {{range $.Slots}}
+        <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
+                hx-post="/slots/{{.Name}}/assign"
+                hx-vals='{"model_id":"{{$modelID}}"}'
+                hx-target="#routing-section"
+                hx-swap="outerHTML"
+                hx-include="none">
+          {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
+        </button>
+        {{end}}
+      </div>
+    </td>
+    <td class="price-cell">{{priceUSD .PromptPrice}}</td>
+    <td class="price-cell">{{priceUSD .CompletionPrice}}</td>
+    <td class="price-cell">{{ctxShort .ContextLength}}</td>
+    <td class="caps-badges">
+      {{if .Vision}}<span class="badge badge--success">V</span>{{end}}
+      {{if .Tools}}<span class="badge badge--neutral">T</span>{{end}}
+      {{if .Reasoning}}<span class="badge badge--warning">R</span>{{end}}
+      {{if .Free}}<span class="badge badge--success">FREE</span>{{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
+  {{end}}
+</tbody>
+{{end}}

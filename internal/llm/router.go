@@ -254,6 +254,15 @@ func (r *Router) GetConfig() RouterConfig {
 	return r.cfg
 }
 
+// Provider returns the provider registered under name, or (nil, false). Used
+// by external packages (admin API) to inspect runtime state.
+func (r *Router) Provider(name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providers[name]
+	return p, ok
+}
+
 // SetProviderModel swaps the underlying model id of a provider slot and
 // persists the choice. Returns an error if the slot does not exist or does
 // not support runtime reconfiguration.

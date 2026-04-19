@@ -19,6 +19,5 @@ docs
 openspec
 .claudignore
 config/routing.json
-migrate-to-pg
 bin/
 /agent

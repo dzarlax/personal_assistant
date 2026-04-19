@@ -74,11 +74,12 @@ type pendingBatch struct {
 }
 
 type Handler struct {
-	bot     *tgbotapi.BotAPI
-	agent   *agent.Agent
-	allowed map[int64]bool
-	ownerID int64
-	logger  *slog.Logger
+	bot          *tgbotapi.BotAPI
+	agent        *agent.Agent
+	allowed      map[int64]bool
+	ownerID      int64
+	adminBaseURL string // public URL of the admin web UI (empty = feature off)
+	logger       *slog.Logger
 
 	forwardMu  sync.Mutex
 	forwardBuf map[int64]*forwardedContent
@@ -88,6 +89,10 @@ type Handler struct {
 
 	sem chan struct{} // concurrency limiter for handleUpdate goroutines
 }
+
+// SetAdminBaseURL sets the public admin UI URL surfaced in /routing as a
+// "Open Admin UI" button. Empty string disables the button.
+func (h *Handler) SetAdminBaseURL(u string) { h.adminBaseURL = u }
 
 func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger) (*Handler, error) {
 	bot, err := tgbotapi.NewBotAPI(cfg.BotToken)
@@ -808,7 +813,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		cfg := h.agent.GetRouting()
 		msg := tgbotapi.NewMessage(chatID, routingMenuText(cfg))
 		msg.ParseMode = tgbotapi.ModeMarkdownV2
-		msg.ReplyMarkup = routingMenuKeyboard(cfg)
+		msg.ReplyMarkup = routingMenuKeyboard(cfg, h.adminBaseURL)
 		h.bot.Send(msg) //nolint:errcheck
 	case "tools":
 		h.handleToolsCommand(chatID)
@@ -1160,8 +1165,8 @@ func routingMenuText(cfg llm.RouterConfig) string {
 	)
 }
 
-func routingMenuKeyboard(cfg llm.RouterConfig) tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
+func routingMenuKeyboard(cfg llm.RouterConfig, adminURL string) tgbotapi.InlineKeyboardMarkup {
+	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("1️⃣ Local: "+cfg.Local, "rt:role:local"),
 			tgbotapi.NewInlineKeyboardButtonData("2️⃣ Primary: "+cfg.Primary, "rt:role:primary"),
@@ -1177,7 +1182,13 @@ func routingMenuKeyboard(cfg llm.RouterConfig) tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Classifier threshold", "rt:min"),
 		),
-	)
+	}
+	if adminURL != "" {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("🌐 Open Admin UI", adminURL),
+		))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func roleMenuKeyboard(role, current string, models []string) tgbotapi.InlineKeyboardMarkup {
@@ -1242,7 +1253,7 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 	switch {
 	case data == "rt:menu":
 		cfg := h.agent.GetRouting()
-		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg, h.adminBaseURL))
 
 	case strings.HasPrefix(data, "rt:role:"):
 		role := strings.TrimPrefix(data, "rt:role:")
@@ -1272,7 +1283,7 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 		}
 		h.logger.Info("routing change applied", "role", role, "model", model)
 		cfg := h.agent.GetRouting()
-		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg, h.adminBaseURL))
 
 	case data == "rt:min":
 		cfg := h.agent.GetRouting()
@@ -1288,7 +1299,7 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 		fmt.Sscanf(strings.TrimPrefix(data, "rt:min:"), "%d", &n)
 		h.agent.SetClassifierMinLen(n)
 		cfg := h.agent.GetRouting()
-		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg, h.adminBaseURL))
 	}
 }
 

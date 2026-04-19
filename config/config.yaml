@@ -114,3 +114,15 @@ voice_api:
   listen: ":8086"
   token: ${VOICE_API_TOKEN}
   chat_id: 9999
+
+# Admin web UI — browse OpenRouter models, assign to slots, edit routing roles.
+# Auth priority: authentik forward-auth (if trust_forward_auth) → cookie → bearer.
+# When running behind Traefik with an Authentik middleware, set trust_forward_auth: true
+# and let the middleware handle access control.
+admin_api:
+  enabled: ${ADMIN_API_ENABLED:-false}
+  listen: ":8087"
+  token: ${ADMIN_API_TOKEN}
+  trust_forward_auth: ${ADMIN_TRUST_FORWARD_AUTH:-false}
+  forward_auth_header: X-authentik-username
+  base_url: ${ADMIN_API_BASE_URL}

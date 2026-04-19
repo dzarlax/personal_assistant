@@ -32,6 +32,7 @@ type Config struct {
 	Filesystem FilesystemConfig `yaml:"filesystem"`
 	TTS        TTSConfig        `yaml:"tts"`
 	VoiceAPI   VoiceAPIConfig   `yaml:"voice_api"`
+	AdminAPI   AdminAPIConfig   `yaml:"admin_api"`
 }
 
 type WebSearchConfig struct {
@@ -68,6 +69,18 @@ type VoiceAPIConfig struct {
 	Listen  string `yaml:"listen"`  // e.g. ":8086"
 	Token   string `yaml:"token"`   // Bearer auth token
 	ChatID  int64  `yaml:"chat_id"` // dedicated conversation chat_id
+}
+
+// AdminAPIConfig controls the web admin interface (model browser, routing
+// editor). Auth priority: authentik forward-auth headers (if trusted) →
+// cookie → bearer. See internal/adminapi for details.
+type AdminAPIConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	Listen            string `yaml:"listen"`              // e.g. ":8087"
+	Token             string `yaml:"token"`               // bootstrap/API bearer token
+	TrustForwardAuth  bool   `yaml:"trust_forward_auth"`  // trust X-authentik-* headers
+	ForwardAuthHeader string `yaml:"forward_auth_header"` // header checked for presence (default: X-authentik-username)
+	BaseURL           string `yaml:"base_url"`            // public URL surfaced in Telegram /routing
 }
 
 type MCPServerConfig struct {

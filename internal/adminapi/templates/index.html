@@ -1,0 +1,75 @@
+{{define "index"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin — Personal Assistant</title>
+  <link rel="stylesheet" href="/static/dzarlax.css">
+  <script src="/static/dzarlax.js" defer></script>
+  <script src="/static/htmx.min.js" defer></script>
+  <style>
+    body { padding: 1.5rem; max-width: var(--container-lg, 1200px); margin: 0 auto; }
+    h1   { margin-bottom: 1rem; }
+    .admin-section { margin-bottom: 2rem; }
+    .filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+    .filters label { display: inline-flex; gap: 0.25rem; align-items: center; }
+    .model-id { font-family: var(--font-mono, monospace); font-size: 0.875rem; }
+    .caps-badges .badge { margin-right: 0.25rem; }
+    .assign-buttons { margin-top: 0.25rem; }
+    .assign-buttons .btn { margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .price-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <h1>Personal Assistant · Admin</h1>
+
+  <section class="admin-section" id="routing-section">
+    {{template "routing_section" .Routing}}
+  </section>
+
+  <section class="admin-section" id="models-section">
+    <div class="card">
+      <div class="card__header" style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>OpenRouter models</strong>
+        <button class="btn btn--ghost btn--small"
+                hx-post="/refresh"
+                hx-target="#models-tbody"
+                hx-swap="outerHTML"
+                hx-indicator="#refresh-spinner">
+          Refresh catalog
+          <span id="refresh-spinner" class="htmx-indicator">…</span>
+        </button>
+      </div>
+      <div class="card__body">
+        <form class="filters"
+              hx-get="/models"
+              hx-target="#models-tbody"
+              hx-swap="outerHTML"
+              hx-trigger="input delay:300ms, change">
+          <input class="form-input" type="search" name="q" placeholder="Search model id…"
+                 value="{{.Filters.Search}}" style="flex:1;min-width:12rem;">
+          <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>
+          <label><input type="checkbox" name="vision"    {{if .Filters.Vision}}checked{{end}}> Vision</label>
+          <label><input type="checkbox" name="tools"     {{if .Filters.Tools}}checked{{end}}> Tools</label>
+          <label><input type="checkbox" name="reasoning" {{if .Filters.Reasoning}}checked{{end}}> Reasoning</label>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Prompt</th>
+                <th>Completion</th>
+                <th>Context</th>
+                <th>Caps</th>
+              </tr>
+            </thead>
+            {{template "models_tbody" .}}
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+</body>
+</html>{{end}}

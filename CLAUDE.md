@@ -247,6 +247,29 @@ Persistence: the SQLite and Postgres stores each implement `llm.CapabilityStore`
 
 Admin UI flow (Phase 2, not built yet): `Router.SetProviderModel(slot, modelID, caps)` → the router type-asserts `providers[slot]` to `ConfigurableProvider`, calls `SetModel`, then `saveOverrides()` writes the current OR model per slot into the settings store under `openrouter_models: {slot: model_id}`. On startup, `Router.TakePendingOpenRouterOverrides()` returns the loaded map which `applyOpenRouterOverrides` in main.go re-applies with caps from the capability store. Unknown model ids persist with zero caps (safer default — vision-aware routing treats them as text-only).
 
+### Admin web UI (`internal/adminapi`)
+
+Optional HTTP server on `:8087` (via `AdminAPIConfig`) serving a single-page htmx-driven UI for browsing OpenRouter models and editing routing. Wired from `main.go` only when `cfg.AdminAPI.Enabled`. Shares the router and `CapabilityStore` with the rest of the bot — no separate process.
+
+Files:
+- `server.go` — `Server` type + `registerRoutes` mux + lifecycle (`Start`/`Shutdown`)
+- `auth.go` — `requireAuth` middleware: Authentik forward-auth header → cookie → bearer → 401. Bootstrap via `?token=...` sets a `admin_auth` cookie and redirects
+- `handlers.go` — request handlers + data builders (`buildIndexData`, `buildRouting`, `openRouterSlots`)
+- `templates.go` — `html/template` parsed at init from `templates/*.html` via `embed.FS`; exposes `render(w, view, data)`
+- `templates/` — `index.html` (full page), `routing.html` / `models_table.html` (htmx partials), `partials_*.html` (shared blocks)
+- `static/` — placeholders committed to unblock `go build`; real `dzarlax.css/js` and `htmx.min.js` are downloaded into this dir at Docker build time via `Dockerfile` ARGs (`DS_VERSION`, `HTMX_VERSION`, `ASSETS_CACHEBUST`). CI passes `ASSETS_CACHEBUST=${github.sha}` so every image ships with a fresh design system `@main`.
+
+Routes:
+- `GET /` — full page (routing + model table)
+- `GET /models?q=&free=&vision=&tools=&reasoning=` — htmx partial: filtered `<tbody>` for `#models-tbody`
+- `GET /routing` — htmx partial: routing card
+- `POST /slots/<slot>/assign` (form: `model_id=...`) — `Router.SetProviderModel` with caps from the store; returns refreshed `routing` partial
+- `POST /routing/<role>/set` (form: `slot=...`) — `Router.SetRole` (maps `default` → `primary`); returns refreshed `routing` partial
+- `POST /refresh` — `llm.FetchOpenRouterModels` + upsert; returns refreshed `models_tbody` partial
+- `GET /healthz` — unauthenticated liveness probe
+
+The admin API never imports the Authentik library — it only _trusts_ the forwarded header. All actual authentication happens upstream in Traefik via the `authentik-auth` middleware. When running without authentik (local dev), the bearer token flow is the default.
+
 ### Persistent settings (`kv_settings`)
 
 `llm.SettingsStore` is a generic key-value interface (`GetSetting` / `PutSetting`) backed by a `kv_settings (key PK, value, updated_at)` table in both SQLite and Postgres. Router stores routing overrides here under the `routing.overrides` key as a JSON blob.
