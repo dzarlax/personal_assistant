@@ -25,18 +25,28 @@ const compactionSystemPrompt = `Summarise the conversation history into a concis
 Preserve: key facts about the user, decisions made, pending tasks, and important context.
 Write only the essential content — no preamble or filler.`
 
-// Compacter summarizes old conversation history.
+// Compacter summarizes old conversation history. The provider is resolved
+// from the Router on each Compact call so runtime role changes (admin UI)
+// take effect without restart.
 type Compacter struct {
-	provider llm.Provider
-	fallback llm.Provider // used when primary rejects content (e.g. DashScope content filter)
+	router *llm.Router
 }
 
-func NewCompacter(provider llm.Provider, fallback ...llm.Provider) *Compacter {
-	c := &Compacter{provider: provider}
-	if len(fallback) > 0 {
-		c.fallback = fallback[0]
+func NewCompacter(router *llm.Router) *Compacter {
+	return &Compacter{router: router}
+}
+
+// providers resolves the current compaction + fallback providers from the
+// router. Falls back to the default role when compaction is unset.
+func (c *Compacter) providers() (primary, fallback llm.Provider) {
+	cfg := c.router.GetConfig()
+	key := cfg.Compaction
+	if key == "" {
+		key = cfg.Default
 	}
-	return c
+	primary, _ = c.router.Provider(key)
+	fallback, _ = c.router.Provider(cfg.Fallback)
+	return primary, fallback
 }
 
 // NeedsCompaction returns true if the conversation history should be compacted.
@@ -133,18 +143,22 @@ func (c *Compacter) simpleCompact(ctx context.Context, rows []store.MessageRow) 
 	for i, row := range rows {
 		history[i] = row.Message
 	}
-	resp, err := c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+	primary, fallback := c.providers()
+	if primary == nil {
+		return "", fmt.Errorf("compaction provider unavailable")
+	}
+	resp, err := primary.Chat(ctx, history, compactionSystemPrompt, nil)
 	if err == nil {
 		return resp.Content, nil
 	}
-	slog.Warn("compaction primary failed", "provider", c.provider.Name(), "err", err)
-	if c.fallback != nil {
-		slog.Info("compaction retrying with fallback", "provider", c.fallback.Name())
-		resp, err = c.fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+	slog.Warn("compaction primary failed", "provider", primary.Name(), "err", err)
+	if fallback != nil {
+		slog.Info("compaction retrying with fallback", "provider", fallback.Name())
+		resp, err = fallback.Chat(ctx, history, compactionSystemPrompt, nil)
 		if err == nil {
 			return resp.Content, nil
 		}
-		slog.Warn("compaction fallback also failed", "provider", c.fallback.Name(), "err", err)
+		slog.Warn("compaction fallback also failed", "provider", fallback.Name(), "err", err)
 	}
 	return "", err
 }
@@ -183,12 +197,16 @@ func (c *Compacter) semanticCompact(ctx context.Context, rows []store.MessageRow
 
 // compactCluster tries the primary provider, then fallback on error.
 func (c *Compacter) compactCluster(ctx context.Context, history []llm.Message) (string, error) {
-	resp, err := c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+	primary, fallback := c.providers()
+	if primary == nil {
+		return "", fmt.Errorf("compaction provider unavailable")
+	}
+	resp, err := primary.Chat(ctx, history, compactionSystemPrompt, nil)
 	if err == nil {
 		return resp.Content, nil
 	}
-	if c.fallback != nil {
-		resp, err = c.fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+	if fallback != nil {
+		resp, err = fallback.Chat(ctx, history, compactionSystemPrompt, nil)
 		if err == nil {
 			return resp.Content, nil
 		}

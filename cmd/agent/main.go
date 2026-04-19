@@ -106,7 +106,6 @@ func main() {
 		logger.Error("default routing provider not configured or failed to init", "provider", cfg.Routing.Default)
 		os.Exit(1)
 	}
-	defaultProvider := providers[cfg.Routing.Default]
 
 	// Optional roles fall through to routing.default when unspecified.
 	multimodalKey := cfg.Routing.Multimodal
@@ -122,6 +121,11 @@ func main() {
 		simpleKey = cfg.Routing.Default
 	}
 
+	compactionKey := cfg.Routing.Compaction
+	if compactionKey == "" {
+		compactionKey = cfg.Routing.Default
+	}
+
 	router := llm.NewRouter(providers, llm.RouterConfig{
 		Simple:            simpleKey,
 		Default:           cfg.Routing.Default,
@@ -129,6 +133,7 @@ func main() {
 		Fallback:          cfg.Routing.Fallback,
 		Multimodal:        multimodalKey,
 		Classifier:        cfg.Routing.Classifier,
+		Compaction:        compactionKey,
 		ClassifierMinLen:  cfg.Routing.ClassifierMinLength,
 		ClassifierTimeout: cfg.Routing.ClassifierTimeout,
 		ClassifierPrompt:  cfg.Routing.ClassifierPrompt,
@@ -196,18 +201,9 @@ func main() {
 		applyOpenRouterOverrides(router, s, orOverrides, logger)
 	}
 
-	// Init compacter — use the effective default after overrides are loaded.
-	// Fallback handles content-filter rejections from the default provider.
-	compactionKey := cfg.Routing.Compaction
-	if compactionKey == "" {
-		compactionKey = router.GetConfig().Default
-	}
-	compactionProvider := providers[compactionKey]
-	if compactionProvider == nil {
-		compactionProvider = defaultProvider
-	}
-	compactFallback := providers[router.GetConfig().Fallback]
-	compacter := agent.NewCompacter(compactionProvider, compactFallback)
+	// Compacter resolves its providers from the router on every call, so
+	// runtime role changes (admin UI) take effect without a restart.
+	compacter := agent.NewCompacter(router)
 
 	// Init MCP client
 	var mcpClient *mcp.Client

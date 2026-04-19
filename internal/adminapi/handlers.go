@@ -268,14 +268,15 @@ func (s *Server) buildRouting() uiRouting {
 	}
 
 	roleCur := map[string]string{
+		"simple":     cfg.Simple,
 		"default":    cfg.Default,
 		"complex":    cfg.Complex,
 		"multimodal": cfg.Multimodal,
 		"fallback":   cfg.Fallback,
-		"simple":     cfg.Simple,
 		"classifier": cfg.Classifier,
+		"compaction": cfg.Compaction,
 	}
-	order := []string{"simple", "default", "complex", "multimodal", "fallback", "classifier"}
+	order := []string{"simple", "default", "complex", "multimodal", "fallback", "classifier", "compaction"}
 	roles := make([]uiRole, 0, len(order))
 	for _, r := range order {
 		roles = append(roles, uiRole{

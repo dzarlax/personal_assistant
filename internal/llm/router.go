@@ -35,6 +35,7 @@ type RouterConfig struct {
 	Fallback          string
 	Multimodal        string
 	Classifier        string // provider used for complexity classification
+	Compaction        string // provider used for history summarisation
 	ClassifierMinLen  int    // min rune length to run classifier; 0 = always; <0 = disabled
 	ClassifierTimeout int    // seconds; default 15
 	ClassifierPrompt  string // system prompt for classifier; uses default if empty
@@ -49,6 +50,7 @@ type routingOverrides struct {
 	Fallback         string `json:"fallback,omitempty"`
 	Multimodal       string `json:"multimodal,omitempty"`
 	Classifier       string `json:"classifier,omitempty"`
+	Compaction       string `json:"compaction,omitempty"`
 	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
 	// Per-slot OpenRouter model overrides (slot name → model id). Lets the admin
 	// UI swap the model backing e.g. `workhorse` to `anthropic/claude-sonnet-4.5`
@@ -169,6 +171,9 @@ func (r *Router) LoadPersistedOverrides() error {
 	if ov.Classifier != "" {
 		r.cfg.Classifier = ov.Classifier
 	}
+	if ov.Compaction != "" {
+		r.cfg.Compaction = ov.Compaction
+	}
 	if ov.ClassifierMinLen != nil {
 		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
 	}
@@ -226,6 +231,7 @@ func (r *Router) saveOverrides() {
 		Fallback:         r.cfg.Fallback,
 		Multimodal:       r.cfg.Multimodal,
 		Classifier:       r.cfg.Classifier,
+		Compaction:       r.cfg.Compaction,
 		ClassifierMinLen: &minLen,
 		OpenRouterModels: r.currentOpenRouterModels(),
 	}
@@ -286,7 +292,7 @@ func (r *Router) SetProviderModel(slot, modelID string, caps Capabilities) error
 }
 
 // SetRole updates a routing role to point at the given model name.
-// Valid roles: simple, default, complex, fallback, classifier, multimodal.
+// Valid roles: simple, default, complex, fallback, classifier, multimodal, compaction.
 func (r *Router) SetRole(role, model string) error {
 	if _, ok := r.providers[model]; !ok {
 		return errors.New("unknown model: " + model)
@@ -306,6 +312,8 @@ func (r *Router) SetRole(role, model string) error {
 		r.cfg.Classifier = model
 	case "multimodal":
 		r.cfg.Multimodal = model
+	case "compaction":
+		r.cfg.Compaction = model
 	default:
 		return errors.New("unknown role: " + role)
 	}
