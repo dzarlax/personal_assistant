@@ -193,12 +193,18 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 // --- Data builders ---
 
 func (s *Server) buildIndexData(r *http.Request) indexData {
+	// Tool calling is required for the agentic loop, so default the filter ON
+	// when the page is first loaded (no query string yet). Once the user
+	// submits the filters form, whatever they sent wins — including unchecking
+	// Tools to browse the full catalog.
+	q := r.URL.Query()
+	formSubmitted := len(q) > 0
 	f := uiFilters{
-		Search:    strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))),
-		Free:      r.URL.Query().Get("free") != "",
-		Vision:    r.URL.Query().Get("vision") != "",
-		Tools:     r.URL.Query().Get("tools") != "",
-		Reasoning: r.URL.Query().Get("reasoning") != "",
+		Search:    strings.ToLower(strings.TrimSpace(q.Get("q"))),
+		Free:      q.Get("free") != "",
+		Vision:    q.Get("vision") != "",
+		Tools:     q.Get("tools") != "" || !formSubmitted,
+		Reasoning: q.Get("reasoning") != "",
 	}
 
 	var allCaps map[string]llm.Capabilities
