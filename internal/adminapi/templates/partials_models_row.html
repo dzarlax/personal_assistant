@@ -11,7 +11,7 @@
                 hx-post="/slots/{{.Name}}/assign"
                 hx-vals='{"model_id":"{{$modelID}}"}'
                 hx-target="#routing-section"
-                hx-swap="outerHTML"
+                hx-swap="innerHTML"
                 hx-include="none">
           {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
         </button>

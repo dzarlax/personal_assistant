@@ -14,7 +14,7 @@
             <td>
               <form hx-post="/routing/{{.Name}}/set"
                     hx-target="#routing-section"
-                    hx-swap="outerHTML"
+                    hx-swap="innerHTML"
                     style="display:inline-flex;gap:0.5rem;align-items:center;">
                 <select class="form-select" name="slot" style="min-width:12rem;">
                   {{$current := .Current}}
