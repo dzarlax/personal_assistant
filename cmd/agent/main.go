@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,22 @@ import (
 	"telegram-agent/internal/telegram"
 	"telegram-agent/internal/voiceapi"
 )
+
+// splitKeywords parses a comma-separated setting value into a trimmed,
+// non-empty list. Used for tool_filter.always_include_keywords.
+func splitKeywords(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -288,7 +305,14 @@ func main() {
 			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			mcpClient.EmbedTools(embedCtx)
 			embedCancel()
-			logger.Info("tool filter enabled", "top_k", topK)
+
+			// always_include_keywords: substring matches against tool names bypass top-K.
+			kwCtx, kwCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			kwRaw := llm.GetStringSetting(kwCtx, ss, llm.SettingKeyToolFilterAlwaysIncludeKeywords, strings.Join(cfg.ToolFilter.AlwaysIncludeKeywords, ","))
+			kwCancel()
+			kw := splitKeywords(kwRaw)
+			mcpClient.SetAlwaysIncludeKeywords(kw)
+			logger.Info("tool filter enabled", "top_k", topK, "always_include_keywords", kw)
 		}
 	}
 

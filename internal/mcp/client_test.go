@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"telegram-agent/internal/config"
+	"telegram-agent/internal/llm"
 )
 
 // --- validateServerURL ---
@@ -258,4 +262,160 @@ func TestReadJSONResult_SizeLimit(t *testing.T) {
 	// Либо успешно прочитает урезанный JSON (маловероятно), либо вернёт decode error.
 	// Главное — не зависнет и не вызовет OOM.
 	_ = err // обе ситуации допустимы
+}
+
+// --- Always-include keyword filter ---
+
+func TestSetAlwaysIncludeKeywords_Normalizes(t *testing.T) {
+	c := &Client{}
+	c.SetAlwaysIncludeKeywords([]string{" GET ", "List", "", "  "})
+	want := []string{"get", "list"}
+	if len(c.alwaysIncludeKeywords) != len(want) {
+		t.Fatalf("expected %d kw, got %d (%v)", len(want), len(c.alwaysIncludeKeywords), c.alwaysIncludeKeywords)
+	}
+	for i, kw := range want {
+		if c.alwaysIncludeKeywords[i] != kw {
+			t.Errorf("kw[%d]: want %q, got %q", i, kw, c.alwaysIncludeKeywords[i])
+		}
+	}
+}
+
+func TestMatchesAnyKeyword(t *testing.T) {
+	cases := []struct {
+		name     string
+		keywords []string
+		want     bool
+	}{
+		{"tasks__get_tasks", []string{"get"}, true},
+		{"tasks__update_task", []string{"get"}, false},
+		{"calendar__GET_events", []string{"get"}, true}, // case-insensitive on name
+		{"fs_list", []string{"get", "list"}, true},
+		{"fs_list", []string{}, false},
+	}
+	for _, c := range cases {
+		got := matchesAnyKeyword(c.name, c.keywords)
+		if got != c.want {
+			t.Errorf("matchesAnyKeyword(%q, %v) = %v, want %v", c.name, c.keywords, got, c.want)
+		}
+	}
+}
+
+// newFilterTestClient builds a Client with 5 preseeded tools + embeddings tuned
+// so top-2 for query-embedding [1,0] is update_task, update_event.
+func newFilterTestClient(t *testing.T, queryEmbedURL string) *Client {
+	t.Helper()
+	return &Client{
+		logger:          testLogger(),
+		embeddingCfg:    config.ModelConfig{Provider: "hf-tei", BaseURL: queryEmbedURL},
+		topK:            2,
+		embeddingsReady: true,
+		tools: []Tool{
+			{Name: "tasks__update_task", Description: "Update a task", Embedding: []float32{1, 0}},
+			{Name: "tasks__get_tasks", Description: "Get all tasks", Embedding: []float32{0, 1}},
+			{Name: "calendar__update_event", Description: "Update an event", Embedding: []float32{0.9, 0.1}},
+			{Name: "calendar__get_events", Description: "Get events", Embedding: []float32{0, 1}},
+			{Name: "fs_list", Description: "List files", Embedding: []float32{0.1, 0.9}},
+		},
+	}
+}
+
+func hfTEIServer(t *testing.T, emb []float32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([][]float32{emb}) //nolint:errcheck
+	}))
+}
+
+func TestLLMToolsForQuery_AlwaysIncludeKeywords(t *testing.T) {
+	srv := hfTEIServer(t, []float32{1, 0}) // query embedding matches update_task best
+	defer srv.Close()
+
+	// No keywords: top-2 only.
+	t.Run("no_keywords", func(t *testing.T) {
+		c := newFilterTestClient(t, srv.URL)
+		got := c.LLMToolsForQuery(context.Background(), "какие задачи")
+		names := toolNames(got)
+		wantSet := map[string]bool{"tasks__update_task": true, "calendar__update_event": true}
+		assertNameSet(t, names, wantSet)
+	})
+
+	// Keyword "get" adds both get_* tools.
+	t.Run("get_keyword", func(t *testing.T) {
+		c := newFilterTestClient(t, srv.URL)
+		c.SetAlwaysIncludeKeywords([]string{"get"})
+		got := c.LLMToolsForQuery(context.Background(), "какие задачи")
+		names := toolNames(got)
+		wantSet := map[string]bool{
+			"tasks__update_task":     true,
+			"calendar__update_event": true,
+			"tasks__get_tasks":       true,
+			"calendar__get_events":   true,
+		}
+		assertNameSet(t, names, wantSet)
+	})
+
+	// Case-insensitive: "GET" behaves like "get".
+	t.Run("uppercase_keyword", func(t *testing.T) {
+		c := newFilterTestClient(t, srv.URL)
+		c.SetAlwaysIncludeKeywords([]string{"GET"})
+		got := c.LLMToolsForQuery(context.Background(), "какие задачи")
+		names := toolNames(got)
+		if !hasName(names, "tasks__get_tasks") || !hasName(names, "calendar__get_events") {
+			t.Fatalf("expected get_* tools after uppercase keyword, got %v", names)
+		}
+	})
+
+	// Keyword "update" matches tools already in top-K → no duplicates, same size as no_keywords.
+	t.Run("dedup", func(t *testing.T) {
+		c := newFilterTestClient(t, srv.URL)
+		c.SetAlwaysIncludeKeywords([]string{"update"})
+		got := c.LLMToolsForQuery(context.Background(), "какие задачи")
+		if len(got) != 2 {
+			t.Fatalf("expected 2 tools (dedup), got %d: %v", len(got), toolNames(got))
+		}
+	})
+
+	// topK=0 (filtering disabled): always-include is ignored, full list returned.
+	t.Run("topk_zero_bypass", func(t *testing.T) {
+		c := newFilterTestClient(t, srv.URL)
+		c.topK = 0
+		c.SetAlwaysIncludeKeywords([]string{"get"})
+		got := c.LLMToolsForQuery(context.Background(), "какие задачи")
+		if len(got) != 5 {
+			t.Fatalf("expected all 5 tools when topK=0, got %d", len(got))
+		}
+	})
+}
+
+func toolNames(tools []llm.Tool) []string {
+	out := make([]string, len(tools))
+	for i, t := range tools {
+		out[i] = t.Name
+	}
+	return out
+}
+
+func hasName(names []string, target string) bool {
+	for _, n := range names {
+		if n == target {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNameSet(t *testing.T, got []string, wantSet map[string]bool) {
+	t.Helper()
+	if len(got) != len(wantSet) {
+		t.Fatalf("expected %d tools, got %d: %v", len(wantSet), len(got), got)
+	}
+	for _, n := range got {
+		if !wantSet[n] {
+			t.Errorf("unexpected tool %q in result", n)
+		}
+	}
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

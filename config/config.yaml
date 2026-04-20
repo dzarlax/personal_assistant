@@ -66,6 +66,12 @@ routing:
 
 tool_filter:
   top_k: 20
+  # Substrings (case-insensitive) matched against tool names that bypass top-K
+  # filtering — any MCP tool whose name contains one of these is always sent to
+  # the LLM. Use to keep read-like tools available even when similarity scoring
+  # ranks write/update variants higher on short queries. Example:
+  #   always_include_keywords: [get, list, recall, search, read]
+  always_include_keywords: []
 
 # Web search — gives LLM access to real-time web results.
 # provider: "tavily" (free 1000/mo, LLM-ready answer+sources) or "ollama" (Ollama Cloud).

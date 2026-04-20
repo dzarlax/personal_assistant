@@ -919,6 +919,13 @@ func (s *Server) settingSpecs() []settingSpec {
 			Default:     fmt.Sprintf("%d", s.cfgRef.ToolFilter.TopK),
 			InputType:   "number",
 		},
+		{
+			Key:         llm.SettingKeyToolFilterAlwaysIncludeKeywords,
+			Label:       "Tool filter always-include keywords",
+			Description: "Comma-separated substrings. Any MCP tool whose name contains one (case-insensitive) is always included, bypassing top-K. Example: get, list, recall, search, read. Applies on next restart.",
+			Default:     strings.Join(s.cfgRef.ToolFilter.AlwaysIncludeKeywords, ","),
+			InputType:   "text",
+		},
 		// Feature flags — changes apply on next restart.
 		{
 			Key:         llm.SettingKeyWebSearchEnabled,

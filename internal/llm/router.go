@@ -306,16 +306,17 @@ const settingsKeyRoutingOverrides = "routing.overrides"
 // Note: classifier_min_length is NOT here — it lives in the routing.overrides
 // JSON blob (legacy persistence) and is set via Router.SetClassifierMinLen.
 const (
-	SettingKeyClassifierTimeout   = "cfg.classifier_timeout"
-	SettingKeyToolFilterTopK      = "cfg.tool_filter_top_k"
-	SettingKeyWebSearchEnabled    = "cfg.web_search_enabled"
-	SettingKeyWebSearchProvider   = "cfg.web_search_provider"
-	SettingKeyWebFetchEnabled     = "cfg.web_fetch_enabled"
-	SettingKeyFilesystemEnabled   = "cfg.filesystem_enabled"
-	SettingKeyTTSEnabled          = "cfg.tts_enabled"
-	SettingKeyTTSVoice            = "cfg.tts_voice"
-	SettingKeyVoiceAPIChatID      = "cfg.voice_api_chat_id"
-	SettingKeyTrustForwardAuth    = "cfg.admin_trust_forward_auth"
+	SettingKeyClassifierTimeout               = "cfg.classifier_timeout"
+	SettingKeyToolFilterTopK                  = "cfg.tool_filter_top_k"
+	SettingKeyToolFilterAlwaysIncludeKeywords = "cfg.tool_filter_always_include_keywords"
+	SettingKeyWebSearchEnabled                = "cfg.web_search_enabled"
+	SettingKeyWebSearchProvider               = "cfg.web_search_provider"
+	SettingKeyWebFetchEnabled                 = "cfg.web_fetch_enabled"
+	SettingKeyFilesystemEnabled               = "cfg.filesystem_enabled"
+	SettingKeyTTSEnabled                      = "cfg.tts_enabled"
+	SettingKeyTTSVoice                        = "cfg.tts_voice"
+	SettingKeyVoiceAPIChatID                  = "cfg.voice_api_chat_id"
+	SettingKeyTrustForwardAuth                = "cfg.admin_trust_forward_auth"
 )
 
 // saveOverrides writes current cfg via the settings store (preferred) or the

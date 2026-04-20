@@ -49,7 +49,8 @@ type WebFetchConfig struct {
 }
 
 type ToolFilterConfig struct {
-	TopK int `yaml:"top_k"` // 0 = disabled
+	TopK                  int      `yaml:"top_k"`                    // 0 = disabled
+	AlwaysIncludeKeywords []string `yaml:"always_include_keywords"`  // substrings matched against tool names (case-insensitive) that bypass top-K filtering
 }
 
 type FilesystemConfig struct {
