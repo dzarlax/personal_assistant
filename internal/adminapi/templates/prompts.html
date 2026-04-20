@@ -1,0 +1,55 @@
+{{define "prompts"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Prompts — Personal Assistant</title>
+  {{template "admin_head" .}}
+  <style>
+    .prompt-card { margin-bottom: 2rem; }
+    .prompt-card textarea {
+      width: 100%; box-sizing: border-box;
+      font-family: var(--font-mono, monospace); font-size: 0.85em;
+      min-height: 220px; resize: vertical;
+      padding: 0.75rem; border-radius: var(--radius, 8px);
+      border: 1px solid rgba(0,0,0,0.15);
+      background: var(--surface-1, #fff);
+      color: var(--text-primary, #000);
+    }
+    .prompt-meta { font-size: 0.8em; color: var(--text-secondary, rgba(0,0,0,0.5)); margin-top: 0.4rem; }
+    .prompt-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+    .save-status { font-size: 0.85em; color: var(--text-secondary, rgba(0,0,0,0.5)); }
+    .save-status.ok { color: var(--success, #16a34a); }
+  </style>
+</head>
+<body>
+  <h1>Personal Assistant · Prompts</h1>
+  {{template "admin_tabs" .}}
+
+  <div class="prompt-card card">
+    <div class="card__body">
+      <h3 style="margin-top:0">System Prompt</h3>
+      <p class="prompt-meta">Shown to the LLM on every turn. DB value overrides the file loaded at startup. Clear to revert to file.</p>
+      <form hx-post="/prompts/system/set" hx-target="#system-status" hx-swap="innerHTML">
+        <textarea name="value" rows="16">{{.SystemPrompt}}</textarea>
+        <div class="prompt-actions">
+          <button type="submit" class="btn btn--primary btn--sm">Save</button>
+          <span id="system-status" class="save-status"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="prompt-card card">
+    <div class="card__body">
+      <h3 style="margin-top:0">Classifier Prompt</h3>
+      <p class="prompt-meta">System prompt for the complexity classifier (qwen3:0.6b). Output must be 1, 2, or 3. DB value overrides config. Clear to revert to default.</p>
+      <form hx-post="/prompts/classifier/set" hx-target="#classifier-status" hx-swap="innerHTML">
+        <textarea name="value" rows="14">{{.ClassifierPrompt}}</textarea>
+        <div class="prompt-actions">
+          <button type="submit" class="btn btn--primary btn--sm">Save</button>
+          <span id="classifier-status" class="save-status"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>{{end}}

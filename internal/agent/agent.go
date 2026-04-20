@@ -177,7 +177,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 		history := a.getHistory(chatID, queryEmb)
 		endHist()
 
-		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
+		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.effectiveSysPrompt(ctx)
 		if crossSessionCtx != "" {
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
@@ -286,7 +286,7 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 		history := a.getHistory(chatID, queryEmb)
 		endHist()
 
-		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
+		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.effectiveSysPrompt(ctx)
 		if crossSessionCtx != "" {
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
@@ -605,6 +605,17 @@ func (a *Agent) backfillAssistantMsgID(ctx context.Context, usageID, asstID int6
 		a.logger.Warn("backfill assistant_message_id failed", "err", err)
 	}
 	_ = ctx
+}
+
+// effectiveSysPrompt returns the system prompt: DB override (prompts.system) if set,
+// otherwise the value loaded from file at startup.
+func (a *Agent) effectiveSysPrompt(ctx context.Context) string {
+	if ss, ok := a.store.(llm.SettingsStore); ok {
+		if v, ok2, _ := ss.GetSetting(ctx, "prompts.system"); ok2 && v != "" {
+			return v
+		}
+	}
+	return a.sysPrompt
 }
 
 // backfillTurnLatency records the end-to-end turn duration on the final usage_log row.

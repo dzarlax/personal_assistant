@@ -18,6 +18,7 @@ const (
 	viewModelsContent = "models_content"
 	viewUsage         = "usage"
 	viewAnalytics     = "analytics"
+	viewPrompts       = "prompts"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -41,6 +42,7 @@ var tmpls = func() map[string]*template.Template {
 		viewModelsContent: "templates/partials_models_browser.html",
 		viewUsage:         "templates/usage.html",
 		viewAnalytics:     "templates/analytics.html",
+		viewPrompts:       "templates/prompts.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {

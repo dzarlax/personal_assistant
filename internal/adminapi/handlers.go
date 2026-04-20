@@ -537,6 +537,62 @@ func (s *Server) firstOpenRouterAPIKey() string {
 	return ""
 }
 
+// handlePrompts: GET /prompts — full page with current prompt values from DB.
+func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
+	type promptsData struct {
+		ActiveTab        string
+		SystemPrompt     string
+		ClassifierPrompt string
+	}
+	data := promptsData{ActiveTab: "prompts"}
+	if s.settings != nil {
+		if v, ok, _ := s.settings.GetSetting(r.Context(), "prompts.system"); ok {
+			data.SystemPrompt = v
+		}
+		if v, ok, _ := s.settings.GetSetting(r.Context(), "prompts.classifier"); ok {
+			data.ClassifierPrompt = v
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewPrompts, data); err != nil {
+		s.logger.Error("render prompts", "err", err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+// handlePromptSet: POST /prompts/{key}/set with body value=...
+// key must be "system" or "classifier".
+func (s *Server) handlePromptSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/prompts/"), "/set")
+	if key != "system" && key != "classifier" {
+		http.Error(w, "unknown prompt key", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	value := r.FormValue("value")
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.settings.PutSetting(ctx, "prompts."+key, value); err != nil {
+		s.logger.Warn("prompt save failed", "key", key, "err", err)
+		http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Info("prompt updated", "key", key, "len", len(value))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(`<span class="save-status ok">Saved</span>`)) //nolint:errcheck
+}
+
 func (s *Server) lookupCaps(ctx context.Context, modelID string) llm.Capabilities {
 	if s.capStore == nil {
 		return llm.Capabilities{}

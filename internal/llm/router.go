@@ -734,6 +734,15 @@ func (r *Router) classify(ctx context.Context, text string) int {
 	if prompt == "" {
 		prompt = defaultClassifierPrompt
 	}
+	// DB override takes precedence over config/default.
+	r.mu.RLock()
+	settings := r.settings
+	r.mu.RUnlock()
+	if settings != nil {
+		if v, ok, _ := settings.GetSetting(classifierCtx, "prompts.classifier"); ok && v != "" {
+			prompt = v
+		}
+	}
 	msgs := []Message{{Role: "user", Content: classifierText}}
 	classifyStart := time.Now()
 	resp, err := provider.Chat(classifierCtx, msgs, prompt, nil)
