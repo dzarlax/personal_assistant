@@ -299,6 +299,17 @@ func (r *Router) currentSlotStates() map[string]slotState {
 // overrides is stored in the settings store.
 const settingsKeyRoutingOverrides = "routing.overrides"
 
+// Scalar setting keys for values that were historically in config.yaml and
+// are now DB-overridable via the admin UI. Reads use GetIntSetting/
+// GetBoolSetting with config-provided defaults.
+//
+// Note: classifier_min_length is NOT here — it lives in the routing.overrides
+// JSON blob (legacy persistence) and is set via Router.SetClassifierMinLen.
+const (
+	SettingKeyClassifierTimeout = "cfg.classifier_timeout"
+	SettingKeyToolFilterTopK    = "cfg.tool_filter_top_k"
+)
+
 // saveOverrides writes current cfg via the settings store (preferred) or the
 // legacy file path. Must be called with mu held.
 func (r *Router) saveOverrides() {
@@ -836,11 +847,16 @@ func (r *Router) classify(ctx context.Context, text string) int {
 	if provider == nil {
 		return 2
 	}
-	timeout := time.Duration(r.cfg.ClassifierTimeout) * time.Second
-	if timeout <= 0 {
-		timeout = 15 * time.Second
+	// Timeout: DB override wins, then cfg, then 15s default.
+	r.mu.RLock()
+	settings := r.settings
+	cfgTimeout := r.cfg.ClassifierTimeout
+	r.mu.RUnlock()
+	timeoutSec := GetIntSetting(ctx, settings, SettingKeyClassifierTimeout, cfgTimeout)
+	if timeoutSec <= 0 {
+		timeoutSec = 15
 	}
-	classifierCtx, cancel := context.WithTimeout(ctx, timeout)
+	classifierCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
 	// Truncate to save tokens — classifier only needs the beginning to judge complexity.
@@ -853,9 +869,6 @@ func (r *Router) classify(ctx context.Context, text string) int {
 		prompt = defaultClassifierPrompt
 	}
 	// DB override takes precedence over config/default.
-	r.mu.RLock()
-	settings := r.settings
-	r.mu.RUnlock()
 	if settings != nil {
 		if v, ok, _ := settings.GetSetting(classifierCtx, "prompts.classifier"); ok && v != "" {
 			prompt = v

@@ -1,0 +1,46 @@
+{{define "settings"}}
+<!doctype html>
+<html>
+<head>{{template "admin_head" .}}<title>Settings — Admin</title>
+<style>
+  .settings-form { max-width: 42rem; }
+  .settings-row { display: grid; grid-template-columns: 1fr auto auto; gap: 0.5rem; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid rgba(0,0,0,0.08); }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-label { font-weight: 600; }
+  .settings-desc  { color: var(--text-secondary, rgba(0,0,0,0.6)); font-size: 0.85em; grid-column: 1 / -1; margin-top: 0.25rem; }
+  .settings-input { width: 8rem; }
+  .save-status.ok { color: #16a34a; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<h1>Admin</h1>
+{{template "admin_tabs" .}}
+
+<div class="card settings-form">
+  <div class="card__header"><strong>Runtime Settings</strong></div>
+  <div class="card__body">
+    <p style="color:var(--text-secondary);margin:0 0 0.75rem 0;font-size:0.9em;">
+      These override <code>config.yaml</code> scalars. Values take effect on the next relevant read —
+      classifier timeout is picked up per request, <code>tool_filter.top_k</code> on next restart.
+      Leave blank to fall back to the config default.
+    </p>
+
+    {{range .Settings}}
+    <form class="settings-row"
+          hx-post="/settings/{{.Key}}/set"
+          hx-swap="innerHTML"
+          hx-target="find .save-status">
+      <div>
+        <div class="settings-label">{{.Label}}</div>
+        <div class="settings-desc">{{.Description}} <span style="opacity:0.7;">(default: <code>{{.Default}}</code>)</span></div>
+      </div>
+      <input class="form-input settings-input" name="value" type="{{.InputType}}" value="{{.Value}}" placeholder="{{.Default}}">
+      <button class="btn btn--small btn--primary" type="submit">Save</button>
+      <span class="save-status" style="grid-column: 1 / -1;"></span>
+    </form>
+    {{end}}
+  </div>
+</div>
+</body>
+</html>
+{{end}}

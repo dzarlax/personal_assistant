@@ -661,6 +661,111 @@ func (s *Server) firstGeminiAPIKey() string {
 	return ""
 }
 
+// --- Settings page ---
+
+// settingSpec describes one user-editable scalar for the Settings tab.
+// Stays in the handlers file so adding a new setting is a one-liner.
+type settingSpec struct {
+	Key         string // kv_settings key (e.g. llm.SettingKeyClassifierTimeout)
+	Label       string
+	Description string
+	Default     string // shown in UI placeholder + as "default: X" hint
+	InputType   string // HTML <input type>; "number" for ints, "text" otherwise
+	Value       string // current DB value, empty if unset
+}
+
+// settingSpecs returns the list of scalars exposed in the Settings tab, in
+// display order. Extend this slice to surface more config keys.
+func (s *Server) settingSpecs() []settingSpec {
+	defs := []settingSpec{
+		{
+			Key:         llm.SettingKeyClassifierTimeout,
+			Label:       "Classifier timeout (seconds)",
+			Description: "Max time to wait for the classifier model per request before defaulting to level 2.",
+			Default:     fmt.Sprintf("%d", s.cfgRef.Routing.ClassifierTimeout),
+			InputType:   "number",
+		},
+		{
+			Key:         llm.SettingKeyToolFilterTopK,
+			Label:       "Tool filter top-K",
+			Description: "Number of most-relevant MCP tools to include per request (0 = disabled). Applies on next restart.",
+			Default:     fmt.Sprintf("%d", s.cfgRef.ToolFilter.TopK),
+			InputType:   "number",
+		},
+	}
+	if s.settings != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for i := range defs {
+			if v, ok, _ := s.settings.GetSetting(ctx, defs[i].Key); ok {
+				defs[i].Value = v
+			}
+		}
+	}
+	return defs
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{
+		"ActiveTab": "settings",
+		"Settings":  s.settingSpecs(),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewSettings, data); err != nil {
+		s.logger.Error("render settings", "err", err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+// handleSettingSet: POST /settings/{key}/set with body value=...
+// Validates the key against the allowlist derived from settingSpecs so an
+// attacker can't smuggle arbitrary kv_settings keys through this endpoint.
+func (s *Server) handleSettingSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/settings/"), "/set")
+	allowed := false
+	for _, sp := range s.settingSpecs() {
+		if sp.Key == key {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		http.Error(w, "unknown setting", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	value := strings.TrimSpace(r.FormValue("value"))
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if value == "" {
+		// Empty string = revert to config default. Delete the DB key so the
+		// GetIntSetting fallback kicks in.
+		if err := s.settings.PutSetting(ctx, key, ""); err != nil {
+			s.logger.Warn("setting delete failed", "key", key, "err", err)
+			http.Error(w, "save failed", http.StatusInternalServerError)
+			return
+		}
+	} else if err := s.settings.PutSetting(ctx, key, value); err != nil {
+		s.logger.Warn("setting save failed", "key", key, "err", err)
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	s.logger.Info("setting updated", "key", key, "value", value)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(`<span class="save-status ok">Saved</span>`)) //nolint:errcheck
+}
+
 // handlePrompts: GET /prompts — full page with current prompt values from DB.
 func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	type promptsData struct {

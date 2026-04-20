@@ -115,4 +115,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/analytics", authed(http.HandlerFunc(s.handleAnalytics)))
 	mux.Handle("/prompts", authed(http.HandlerFunc(s.handlePrompts)))
 	mux.Handle("/prompts/", authed(http.HandlerFunc(s.handlePromptSet))) // POST /prompts/{key}/set
+	mux.Handle("/settings", authed(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("/settings/", authed(http.HandlerFunc(s.handleSettingSet))) // POST /settings/{key}/set
 }

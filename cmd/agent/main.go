@@ -236,11 +236,19 @@ func main() {
 		mcpClient.Initialize(initCtx)
 		cancel()
 
-		if emb, ok := cfg.Models["embedding"]; ok && cfg.ToolFilter.TopK > 0 && (emb.APIKey != "" || emb.BaseURL != "") {
-			mcpClient.EnableEmbeddings(emb, cfg.ToolFilter.TopK)
+		// top_k: DB override wins over config; disables filtering if 0.
+		topK := cfg.ToolFilter.TopK
+		if settingsStore, ok := s.(llm.SettingsStore); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			topK = llm.GetIntSetting(ctx, settingsStore, llm.SettingKeyToolFilterTopK, topK)
+			cancel()
+		}
+		if emb, ok := cfg.Models["embedding"]; ok && topK > 0 && (emb.APIKey != "" || emb.BaseURL != "") {
+			mcpClient.EnableEmbeddings(emb, topK)
 			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			mcpClient.EmbedTools(embedCtx)
 			embedCancel()
+			logger.Info("tool filter enabled", "top_k", topK)
 		}
 	}
 

@@ -19,6 +19,7 @@ const (
 	viewUsage         = "usage"
 	viewAnalytics     = "analytics"
 	viewPrompts       = "prompts"
+	viewSettings      = "settings"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -43,6 +44,7 @@ var tmpls = func() map[string]*template.Template {
 		viewUsage:         "templates/usage.html",
 		viewAnalytics:     "templates/analytics.html",
 		viewPrompts:       "templates/prompts.html",
+		viewSettings:      "templates/settings.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {
