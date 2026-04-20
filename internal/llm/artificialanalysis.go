@@ -153,14 +153,130 @@ func LoadAACache(ctx context.Context, settings SettingsStore) (*AACache, error) 
 // capabilities map (keyed by OpenRouter model ID). Models not found in the
 // AA cache keep their existing Score value.
 //
-// OR IDs use dots for version separators (gemini-2.5-pro) while AA keys use
-// dashes (gemini-2-5-pro), so we normalize both sides before matching.
+// Matching strategy (tried in order, first win):
+//  1. Normalize dots→dashes, exact match
+//  2. Strip OR variant suffix (:free/:nitro/:beta/:extended), then exact match
+//  3. Prefix match for date/preview variants (OR key starts with aa_key + preview marker)
+//  4. Anthropic word-order swap: claude-{family}-{ver} ↔ claude-{ver}-{family}
 func MergeAAScores(caps map[string]Capabilities, models map[string]AAModelInfo) {
 	for id, c := range caps {
-		key := strings.ReplaceAll(id, ".", "-")
-		if info, ok := models[key]; ok && info.Score > 0 {
+		if info := lookupAAInfo(id, models); info != nil && info.Score > 0 {
 			c.Score = info.Score
 			caps[id] = c
 		}
 	}
+}
+
+// lookupAAInfo tries all mapping strategies for a single OR model ID.
+func lookupAAInfo(orID string, models map[string]AAModelInfo) *AAModelInfo {
+	norm := strings.ReplaceAll(orID, ".", "-")
+
+	// 1. Exact match after dot→dash normalization.
+	if info, ok := models[norm]; ok {
+		return &info
+	}
+
+	// 2. Strip OR variant suffix (:free, :nitro, :beta, :extended, etc.).
+	base := norm
+	if i := strings.Index(norm, ":"); i != -1 {
+		base = norm[:i]
+	}
+	if base != norm {
+		if info, ok := models[base]; ok {
+			return &info
+		}
+	}
+
+	// 3. Prefix match for date/preview variants.
+	//    OR appends -preview, -exp, or date stamps (-MM-DD / -YYYY-MM-DD).
+	//    We accept a match only when the OR key starts with aa_key + a known
+	//    preview marker, to avoid matching distinct models sharing a prefix
+	//    (e.g. gemini-flash vs gemini-flash-lite).
+	if info := prefixMatch(base, models); info != nil {
+		return info
+	}
+
+	// 4. Anthropic word-order swap: OR uses claude-{family}-{ver},
+	//    AA uses claude-{ver}-{family}. Try both permutations.
+	if strings.HasPrefix(norm, "anthropic/claude-") {
+		if info := anthropicSwap(base, models); info != nil {
+			return info
+		}
+	}
+
+	return nil
+}
+
+// previewMarkers are suffixes that OR appends to a base model slug to indicate
+// a preview or dated release. We only prefix-match on these to avoid false
+// positives between distinct model families.
+var previewMarkers = []string{"-preview", "-exp", "-0", "-1", "-2"}
+
+func prefixMatch(orBase string, models map[string]AAModelInfo) *AAModelInfo {
+	var best *AAModelInfo
+	bestLen := 0
+	for k, info := range models {
+		if !strings.HasPrefix(orBase, k) {
+			continue
+		}
+		rest := orBase[len(k):]
+		// Only match when what follows is a known preview marker.
+		matched := rest == ""
+		if !matched {
+			for _, m := range previewMarkers {
+				if strings.HasPrefix(rest, m) {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched && len(k) > bestLen {
+			cp := info
+			best = &cp
+			bestLen = len(k)
+		}
+	}
+	return best
+}
+
+// anthropicSwap handles the OR/AA naming inversion for Claude models.
+// OR uses claude-{family}-{ver} (e.g. claude-sonnet-4-5),
+// AA uses claude-{ver}-{family} (e.g. claude-4-5-sonnet).
+// We try moving each alpha token to either end.
+func anthropicSwap(orBase string, models map[string]AAModelInfo) *AAModelInfo {
+	const pfx = "anthropic/claude-"
+	rest := strings.TrimPrefix(orBase, pfx)
+	tokens := strings.Split(rest, "-")
+	if len(tokens) < 2 {
+		return nil
+	}
+	for i, tok := range tokens {
+		if !isAlpha(tok) {
+			continue
+		}
+		others := make([]string, 0, len(tokens)-1)
+		others = append(others, tokens[:i]...)
+		others = append(others, tokens[i+1:]...)
+
+		// Try alpha token at the end (OR: sonnet-4-5 → AA: 4-5-sonnet)
+		candidate := pfx + strings.Join(append(others, tok), "-")
+		if info, ok := models[candidate]; ok {
+			return &info
+		}
+		// Try alpha token at the front (reverse direction)
+		candidate = pfx + strings.Join(append([]string{tok}, others...), "-")
+		if info, ok := models[candidate]; ok {
+			return &info
+		}
+	}
+	return nil
+}
+
+func isAlpha(s string) bool {
+	for _, r := range s {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return s != ""
 }
