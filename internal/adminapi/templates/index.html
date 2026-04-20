@@ -1,62 +1,15 @@
 {{define "index"}}<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Admin — Personal Assistant</title>
-  <link rel="stylesheet" href="/static/dzarlax.css">
-  <script src="/static/dzarlax.js" defer></script>
-  <script src="/static/htmx.min.js" defer></script>
-  <style>
-    body { padding: 1.5rem 2rem; margin: 0; max-width: none; }
-    h1   { margin-bottom: 1rem; }
-    .admin-section { margin-bottom: 2rem; }
-    .filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
-    .filters label { display: inline-flex; gap: 0.25rem; align-items: center; }
-    .model-id { font-family: var(--font-mono, monospace); font-size: 0.875rem; }
-    .caps-badges .badge { margin-right: 0.25rem; }
-    .assign-buttons { margin-top: 0.25rem; }
-    .assign-buttons .btn { margin-right: 0.25rem; margin-bottom: 0.25rem; }
-    .price-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .preset-banner { padding: 0.75rem 1rem; border-radius: var(--radius, 8px); background: var(--surface-2, #E8E6E3); margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    .preset-banner .preset-meta { color: var(--text-secondary, rgba(0,0,0,0.6)); font-size: 0.875rem; margin-top: 0.25rem; }
-    .preset-banner details { margin-top: 0.5rem; font-size: 0.85em; }
-    .preset-banner details > summary { cursor: pointer; color: var(--text-secondary, rgba(0,0,0,0.6)); user-select: none; list-style: none; }
-    .preset-banner details > summary::-webkit-details-marker { display: none; }
-    .preset-banner details > summary::before { content: "▸ "; display: inline-block; transition: transform 0.15s; }
-    .preset-banner details[open] > summary::before { content: "▾ "; }
-    .preset-banner details .formula { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.04); border-left: 3px solid var(--accent, #888); border-radius: 4px; line-height: 1.45; font-size: 0.9em; }
-    .preset-banner details .formula code { background: rgba(0,0,0,0.06); padding: 0 0.25rem; border-radius: 3px; }
-    .suggest-btn { margin-left: 0.5rem; }
-    .table-wrap { overflow-x: auto; }
-    .table-wrap table { width: 100%; }
-    .usage-toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    .usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
-    .usage-card { padding: 0.75rem 1rem; border-radius: var(--radius, 8px); background: var(--surface-2, #E8E6E3); }
-    .usage-card__label { font-size: 0.8em; color: var(--text-secondary, rgba(0,0,0,0.6)); text-transform: uppercase; letter-spacing: 0.05em; }
-    .usage-card__value { font-size: 1.5em; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 0.25rem; }
-    .usage-card__sub { font-size: 0.8em; color: var(--text-secondary, rgba(0,0,0,0.6)); margin-top: 0.25rem; }
-    .usage-chart-wrap { margin-bottom: 1.5rem; padding: 0.75rem; background: rgba(0,0,0,0.03); border-radius: var(--radius, 8px); }
-    .usage-chart-title { font-size: 0.85em; margin-bottom: 0.5rem; color: var(--text-secondary, rgba(0,0,0,0.7)); }
-    .usage-chart { width: 100%; height: auto; display: block; }
-    .usage-chart-legend { font-size: 0.85em; display: flex; gap: 1.5rem; margin-top: 0.5rem; color: var(--text-secondary, rgba(0,0,0,0.7)); }
-    .usage-chart-legend__swatch { display: inline-block; width: 10px; height: 10px; margin-right: 0.25rem; border-radius: 2px; vertical-align: middle; }
-    .usage-section-h { font-size: 0.95em; margin-top: 1.5rem; margin-bottom: 0.5rem; font-weight: 600; }
-    .usage-turns td { vertical-align: top; }
-    .usage-turn__q { color: var(--text-primary, #000); margin-bottom: 0.25rem; font-size: 0.9em; }
-    .usage-turn__a { color: var(--text-secondary, rgba(0,0,0,0.7)); font-size: 0.9em; }
-  </style>
+  {{template "admin_head" .}}
 </head>
 <body>
   <h1>Personal Assistant · Admin</h1>
+  {{template "admin_tabs" .}}
 
   <section class="admin-section" id="routing-section">
     {{template "routing_section" .Routing}}
-  </section>
-
-  <section class="admin-section" id="usage-section-wrap"
-           hx-get="/usage?period=7d" hx-trigger="load" hx-swap="innerHTML">
-    <div class="card"><div class="card__body" style="color:var(--text-secondary);">Loading usage…</div></div>
   </section>
 
   <section class="admin-section" id="models-section">

@@ -66,10 +66,11 @@ type uiFilters struct {
 }
 
 type indexData struct {
-	Routing uiRouting
-	Slots   []uiSlot // OpenRouter-backed slots only (for per-model assign buttons)
-	Models  []uiModel
-	Filters uiFilters
+	ActiveTab string // "routing" or "analytics" — drives tab highlight in layout
+	Routing   uiRouting
+	Slots     []uiSlot // OpenRouter-backed slots only (for per-model assign buttons)
+	Models    []uiModel
+	Filters   uiFilters
 }
 
 // --- Handlers ---
@@ -79,6 +80,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := render(w, viewIndex, data); err != nil {
 		s.logger.Error("render index", "err", err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	// Analytics page is a thin frame — the usage section lazy-loads via /usage.
+	// Still needs ActiveTab so the tab bar highlights the right entry.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewAnalytics, map[string]any{"ActiveTab": "analytics"}); err != nil {
+		s.logger.Error("render analytics", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
@@ -285,10 +296,11 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			}
 		}
 		return indexData{
-			Routing: s.buildRouting(),
-			Slots:   s.openRouterSlots(),
-			Models:  models,
-			Filters: filters,
+			ActiveTab: "routing",
+			Routing:   s.buildRouting(),
+			Slots:     s.openRouterSlots(),
+			Models:    models,
+			Filters:   filters,
 		}
 	}
 

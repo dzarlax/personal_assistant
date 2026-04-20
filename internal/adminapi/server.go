@@ -112,4 +112,5 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/routing/", authed(http.HandlerFunc(s.handleRoleSet))) // POST /routing/{role}/set
 	mux.Handle("/refresh", authed(http.HandlerFunc(s.handleRefresh)))
 	mux.Handle("/usage", authed(http.HandlerFunc(s.handleUsage)))
+	mux.Handle("/analytics", authed(http.HandlerFunc(s.handleAnalytics)))
 }

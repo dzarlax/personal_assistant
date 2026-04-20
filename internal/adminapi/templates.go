@@ -17,6 +17,7 @@ const (
 	viewModelsBrowser = "models_browser"
 	viewModelsContent = "models_content"
 	viewUsage         = "usage"
+	viewAnalytics     = "analytics"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -25,6 +26,7 @@ var tmpls = func() map[string]*template.Template {
 	out := map[string]*template.Template{}
 	// Shared partials are parsed into each view so {{template "..."}} calls work.
 	partials := []string{
+		"templates/partials_layout.html",
 		"templates/partials_routing.html",
 		"templates/partials_models_row.html",
 		"templates/partials_models_browser.html",
@@ -38,6 +40,7 @@ var tmpls = func() map[string]*template.Template {
 		viewModelsBrowser: "templates/partials_models_browser.html",
 		viewModelsContent: "templates/partials_models_browser.html",
 		viewUsage:         "templates/usage.html",
+		viewAnalytics:     "templates/analytics.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {
