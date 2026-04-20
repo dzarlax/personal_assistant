@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -44,12 +45,13 @@ func FetchArtificialAnalysisScores(ctx context.Context, apiKey string) (map[stri
 type aaModelsResponse struct {
 	Status json.RawMessage `json:"status"`
 	Data   []struct {
-		Slug        string `json:"slug"`
+		Slug         string `json:"slug"`
+		ModelCreator struct {
+			Slug string `json:"slug"`
+		} `json:"model_creator"`
 		Evaluations struct {
 			ArtificialAnalysisIntelligenceIndex *float64 `json:"artificial_analysis_intelligence_index"`
 		} `json:"evaluations"`
-		// AA uses its own slugs; OpenRouter slug is also provided.
-		OpenrouterSlug *string `json:"openrouter_slug"`
 	} `json:"data"`
 }
 
@@ -64,13 +66,10 @@ func parseAAModels(body []byte) (map[string]float64, error) {
 		if score == nil || *score == 0 {
 			continue
 		}
-		// Index by OpenRouter slug when available (matches our capability store keys).
-		if m.OpenrouterSlug != nil && *m.OpenrouterSlug != "" {
-			out[*m.OpenrouterSlug] = *score
-		}
-		// Also index by AA slug as fallback.
-		if m.Slug != "" {
-			out[m.Slug] = *score
+		// AA v2 uses {creator_slug}/{model_slug} format, which maps to OpenRouter IDs
+		// after normalizing dots↔dashes (done in MergeAAScores).
+		if m.ModelCreator.Slug != "" && m.Slug != "" {
+			out[m.ModelCreator.Slug+"/"+m.Slug] = *score
 		}
 	}
 	return out, nil
@@ -79,9 +78,24 @@ func parseAAModels(body []byte) (map[string]float64, error) {
 // MergeAAScores overlays AA Intelligence Index scores onto an existing
 // capabilities map (keyed by OpenRouter model ID). Models not found in scores
 // keep their existing Score value.
+//
+// AA slugs use dashes for version separators (gemini-2-5-pro) while OpenRouter
+// uses dots (gemini-2.5-pro), so we try both exact and dot→dash normalized match.
 func MergeAAScores(caps map[string]Capabilities, scores map[string]float64) {
+	// Build a dot→dash normalized lookup so OR IDs like "google/gemini-2.5-pro"
+	// match AA slugs like "google/gemini-2-5-pro".
+	normed := make(map[string]float64, len(scores))
+	for k, v := range scores {
+		normed[strings.ReplaceAll(k, ".", "-")] = v
+	}
+
 	for id, c := range caps {
 		if s, ok := scores[id]; ok {
+			c.Score = s
+			caps[id] = c
+			continue
+		}
+		if s, ok := normed[strings.ReplaceAll(id, ".", "-")]; ok {
 			c.Score = s
 			caps[id] = c
 		}
