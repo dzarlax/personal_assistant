@@ -69,6 +69,7 @@ type Router struct {
 	persistPath string // legacy: file for routing overrides. Read once on first start
 	//                   for migration, then the binary writes to the settings store.
 	settings      SettingsStore // primary persistence; DB-backed
+	usage         UsageStore    // optional; when set, Router records UsageLog after every call
 	lastRouted    string        // display name of last provider (for UI)
 	lastRoutedKey string        // map key of last provider (for tool continuation)
 	// Set by LoadPersistedOverrides; main.go drains via TakePendingOpenRouterOverrides
@@ -77,6 +78,14 @@ type Router struct {
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
+}
+
+// SetUsageStore wires the UsageLog sink. Calls before Chat() is invoked take
+// effect on the next request; Chat() reads the field under r.mu.
+func (r *Router) SetUsageStore(u UsageStore) {
+	r.mu.Lock()
+	r.usage = u
+	r.mu.Unlock()
 }
 
 func NewRouter(providers map[string]Provider, cfg RouterConfig) *Router {
@@ -332,12 +341,16 @@ func (r *Router) SetClassifierMinLen(n int) {
 
 func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
 	provider := r.pick(ctx, messages)
+	primaryKey := r.keyFor(provider)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
-	r.lastRoutedKey = r.keyFor(provider)
+	r.lastRoutedKey = primaryKey
 	r.mu.Unlock()
 
+	start := time.Now()
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
+	r.recordUsage(ctx, provider, primaryKey, resp, err, time.Since(start))
+
 	if err != nil && isUnavailable(err) {
 		// Build fallback chain: override → default → fallback.
 		// Skip providers already tried or equal to current.
@@ -354,7 +367,9 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 			if r.OnFallback != nil {
 				r.OnFallback(provider.Name(), next.Name())
 			}
+			fbStart := time.Now()
 			resp, err = next.Chat(ctx, messages, systemPrompt, tools)
+			r.recordUsage(ctx, next, "fallback", resp, err, time.Since(fbStart))
 			if err == nil || !isUnavailable(err) {
 				break
 			}
@@ -362,6 +377,59 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 		}
 	}
 	return resp, err
+}
+
+// recordUsage persists a UsageLog row for one LLM call. Runs best-effort —
+// errors are logged but never fail the request. Extracts turn meta from ctx
+// when present; falls back to 0s when absent.
+func (r *Router) recordUsage(ctx context.Context, p Provider, role string, resp Response, callErr error, latency time.Duration) {
+	r.mu.RLock()
+	store := r.usage
+	r.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	meta, _ := TurnMetaFrom(ctx)
+	if meta.RoleHint != "" {
+		role = meta.RoleHint
+	}
+	provKind, modelID := splitProviderName(p.Name())
+	log := UsageLog{
+		Provider:           provKind,
+		ModelID:            modelID,
+		Role:               role,
+		ChatID:             meta.ChatID,
+		PromptTokens:       resp.Usage.PromptTokens,
+		CompletionTokens:   resp.Usage.CompletionTokens,
+		CachedPromptTokens: resp.Usage.CachedPromptTokens,
+		ReasoningTokens:    resp.Usage.ReasoningTokens,
+		LatencyMs:          int(latency / time.Millisecond),
+		Success:            callErr == nil,
+		ErrorClass:         ClassifyErrorClass(callErr),
+		RequestID:          resp.Usage.RequestID,
+		ToolCallCount:      len(resp.ToolCalls),
+	}
+	if meta.UserMessageID != 0 {
+		id := meta.UserMessageID
+		log.UserMessageID = &id
+	}
+	// Best-effort write with short timeout — usage logging must never block or
+	// fail a user request.
+	writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := store.PutUsage(writeCtx, log); err != nil {
+		r.logger.Warn("usage log write failed", "err", err, "provider", provKind, "model", modelID)
+	}
+}
+
+// splitProviderName breaks a "provider/model" Name() into its parts. For
+// providers whose Name() does not contain a slash, provider = full name and
+// model = "".
+func splitProviderName(name string) (provider, model string) {
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		return name[:i], name[i+1:]
+	}
+	return name, ""
 }
 
 // ChatStream returns a streaming channel if the current provider supports it.

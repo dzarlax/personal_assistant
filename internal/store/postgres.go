@@ -75,6 +75,28 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			value      TEXT NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`CREATE TABLE IF NOT EXISTS usage_log (
+			id                   BIGSERIAL PRIMARY KEY,
+			ts                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			provider             TEXT        NOT NULL,
+			model_id             TEXT        NOT NULL,
+			role                 TEXT        NOT NULL,
+			chat_id              BIGINT      NOT NULL DEFAULT 0,
+			prompt_tokens        INTEGER     NOT NULL DEFAULT 0,
+			completion_tokens    INTEGER     NOT NULL DEFAULT 0,
+			cached_prompt_tokens INTEGER     NOT NULL DEFAULT 0,
+			reasoning_tokens     INTEGER     NOT NULL DEFAULT 0,
+			latency_ms           INTEGER     NOT NULL DEFAULT 0,
+			success              BOOLEAN     NOT NULL DEFAULT TRUE,
+			error_class          TEXT        NOT NULL DEFAULT '',
+			request_id           TEXT        NOT NULL DEFAULT '',
+			tool_call_count      INTEGER     NOT NULL DEFAULT 0,
+			user_message_id      BIGINT,
+			assistant_message_id BIGINT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_chat_ts  ON usage_log(chat_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_user_msg ON usage_log(user_message_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := p.pool.Exec(ctx, s); err != nil {
@@ -610,4 +632,36 @@ func scanMessagesPg(rows pgx.Rows) []llm.Message {
 		msgs = append(msgs, m)
 	}
 	return msgs
+}
+
+// --- UsageStore implementation ---
+
+func (p *Postgres) PutUsage(ctx context.Context, u llm.UsageLog) (int64, error) {
+	var id int64
+	err := p.pool.QueryRow(ctx, `
+		INSERT INTO usage_log (
+			provider, model_id, role, chat_id,
+			prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
+			latency_ms, success, error_class, request_id, tool_call_count,
+			user_message_id, assistant_message_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id`,
+		u.Provider, u.ModelID, u.Role, u.ChatID,
+		u.PromptTokens, u.CompletionTokens, u.CachedPromptTokens, u.ReasoningTokens,
+		u.LatencyMs, u.Success, u.ErrorClass, u.RequestID, u.ToolCallCount,
+		u.UserMessageID, u.AssistantMessageID,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("put usage: %w", err)
+	}
+	return id, nil
+}
+
+func (p *Postgres) UpdateAssistantMessageID(ctx context.Context, usageID, msgID int64) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE usage_log SET assistant_message_id = $1 WHERE id = $2`, msgID, usageID)
+	if err != nil {
+		return fmt.Errorf("update usage assistant_message_id: %w", err)
+	}
+	return nil
 }

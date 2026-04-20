@@ -290,3 +290,92 @@ func TestSQLite_Settings(t *testing.T) {
 		t.Errorf("upsert did not overwrite: got %q", got)
 	}
 }
+
+// TestSQLite_UsageLog: insert, backfill assistant_message_id, verify round-trip.
+func TestSQLite_UsageLog(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	userMsgID := int64(101)
+	u := llm.UsageLog{
+		Provider:           "openrouter",
+		ModelID:            "qwen/qwen3.6-plus",
+		Role:               "default",
+		ChatID:             999,
+		PromptTokens:       1200,
+		CompletionTokens:   300,
+		CachedPromptTokens: 800,
+		ReasoningTokens:    50,
+		LatencyMs:          1700,
+		Success:            true,
+		RequestID:          "gen-abc123",
+		ToolCallCount:      2,
+		UserMessageID:      &userMsgID,
+	}
+	id, err := s.PutUsage(ctx, u)
+	if err != nil {
+		t.Fatalf("PutUsage: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("expected positive id, got %d", id)
+	}
+
+	// Backfill assistant_message_id on the turn's final call.
+	if err := s.UpdateAssistantMessageID(ctx, id, 202); err != nil {
+		t.Fatalf("UpdateAssistantMessageID: %v", err)
+	}
+
+	// Manual SELECT to verify all columns persisted correctly.
+	row := s.db.QueryRowContext(ctx, `
+		SELECT provider, model_id, role, chat_id,
+		       prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
+		       latency_ms, success, error_class, request_id, tool_call_count,
+		       user_message_id, assistant_message_id
+		FROM usage_log WHERE id = ?`, id)
+	var (
+		provider, modelID, role, errorClass, requestID string
+		chatID, userMID, asstMID                       int64
+		promptT, complT, cachedT, reasT, latMs, tcCnt  int
+		success                                        int
+	)
+	if err := row.Scan(&provider, &modelID, &role, &chatID,
+		&promptT, &complT, &cachedT, &reasT,
+		&latMs, &success, &errorClass, &requestID, &tcCnt,
+		&userMID, &asstMID); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if provider != "openrouter" || modelID != "qwen/qwen3.6-plus" || role != "default" {
+		t.Errorf("identity mismatch: %q %q %q", provider, modelID, role)
+	}
+	if promptT != 1200 || complT != 300 || cachedT != 800 || reasT != 50 {
+		t.Errorf("token counts mismatch: prompt=%d compl=%d cached=%d reas=%d", promptT, complT, cachedT, reasT)
+	}
+	if tcCnt != 2 || latMs != 1700 || success != 1 || requestID != "gen-abc123" {
+		t.Errorf("metadata mismatch: tc=%d lat=%d ok=%d rid=%q", tcCnt, latMs, success, requestID)
+	}
+	if userMID != 101 || asstMID != 202 {
+		t.Errorf("message links mismatch: user=%d asst=%d", userMID, asstMID)
+	}
+
+	// Second record with no UserMessageID (background task, e.g. compaction).
+	u2 := llm.UsageLog{
+		Provider: "openrouter", ModelID: "qwen/qwen3.5-9b", Role: "compaction",
+		PromptTokens: 5000, CompletionTokens: 200, Success: true,
+	}
+	id2, err := s.PutUsage(ctx, u2)
+	if err != nil {
+		t.Fatalf("PutUsage #2: %v", err)
+	}
+	if id2 == id {
+		t.Fatalf("expected distinct ids, got %d twice", id)
+	}
+	var userMIDNullable, asstMIDNullable *int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT user_message_id, assistant_message_id FROM usage_log WHERE id = ?`, id2,
+	).Scan(&userMIDNullable, &asstMIDNullable); err != nil {
+		t.Fatalf("scan #2: %v", err)
+	}
+	if userMIDNullable != nil || asstMIDNullable != nil {
+		t.Errorf("expected NULL message ids, got user=%v asst=%v", userMIDNullable, asstMIDNullable)
+	}
+}

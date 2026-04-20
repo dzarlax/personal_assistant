@@ -197,6 +197,11 @@ func main() {
 	if err := router.LoadPersistedOverrides(); err != nil {
 		logger.Warn("failed to load routing overrides", "err", err)
 	}
+	// Wire usage log sink (best-effort: router tolerates nil store).
+	if us, ok := s.(llm.UsageStore); ok {
+		router.SetUsageStore(us)
+		logger.Info("usage logging enabled")
+	}
 	// Apply persisted per-slot OpenRouter model overrides (e.g. admin UI picked
 	// a different model last session). Pull caps from the store.
 	if orOverrides := router.TakePendingOpenRouterOverrides(); len(orOverrides) > 0 {

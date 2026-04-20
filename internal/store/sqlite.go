@@ -52,6 +52,29 @@ CREATE TABLE IF NOT EXISTS kv_settings (
     value      TEXT NOT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS usage_log (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    provider             TEXT    NOT NULL,
+    model_id             TEXT    NOT NULL,
+    role                 TEXT    NOT NULL,
+    chat_id              INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens        INTEGER NOT NULL DEFAULT 0,
+    completion_tokens    INTEGER NOT NULL DEFAULT 0,
+    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens     INTEGER NOT NULL DEFAULT 0,
+    latency_ms           INTEGER NOT NULL DEFAULT 0,
+    success              INTEGER NOT NULL DEFAULT 1,
+    error_class          TEXT    NOT NULL DEFAULT '',
+    request_id           TEXT    NOT NULL DEFAULT '',
+    tool_call_count      INTEGER NOT NULL DEFAULT 0,
+    user_message_id      INTEGER,
+    assistant_message_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model_id);
+CREATE INDEX IF NOT EXISTS idx_usage_chat_ts  ON usage_log(chat_id, ts);
+CREATE INDEX IF NOT EXISTS idx_usage_user_msg ON usage_log(user_message_id);
 `
 
 const (
@@ -680,4 +703,40 @@ func (s *SQLite) PutSetting(ctx context.Context, key, value string) error {
 		return fmt.Errorf("put setting: %w", err)
 	}
 	return nil
+}
+
+// --- UsageStore implementation ---
+
+func (s *SQLite) PutUsage(ctx context.Context, u llm.UsageLog) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO usage_log (
+			provider, model_id, role, chat_id,
+			prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
+			latency_ms, success, error_class, request_id, tool_call_count,
+			user_message_id, assistant_message_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Provider, u.ModelID, u.Role, u.ChatID,
+		u.PromptTokens, u.CompletionTokens, u.CachedPromptTokens, u.ReasoningTokens,
+		u.LatencyMs, boolToInt(u.Success), u.ErrorClass, u.RequestID, u.ToolCallCount,
+		nullableInt64(u.UserMessageID), nullableInt64(u.AssistantMessageID))
+	if err != nil {
+		return 0, fmt.Errorf("put usage: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+func (s *SQLite) UpdateAssistantMessageID(ctx context.Context, usageID, msgID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE usage_log SET assistant_message_id = ? WHERE id = ?`, msgID, usageID)
+	if err != nil {
+		return fmt.Errorf("update usage assistant_message_id: %w", err)
+	}
+	return nil
+}
+
+func nullableInt64(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }

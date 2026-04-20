@@ -196,16 +196,33 @@ type rawToolFunctionDef struct {
 }
 
 type rawChatResponse struct {
+	ID      string `json:"id"` // provider request id (OpenRouter: "gen-...")
 	Choices []struct {
 		Message struct {
 			Content   string        `json:"content"`
 			ToolCalls []rawToolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *rawUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+// rawUsage covers OpenAI-compatible usage fields plus the nested *_details
+// blocks that OpenRouter / Anthropic / OpenAI populate for prompt caching
+// and reasoning tokens.
+type rawUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
@@ -271,6 +288,19 @@ func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, sys
 			Name:      tc.Function.Name,
 			Arguments: tc.Function.Arguments,
 		})
+	}
+	if u := chatResp.Usage; u != nil {
+		result.Usage = Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			RequestID:        chatResp.ID,
+		}
+		if u.PromptTokensDetails != nil {
+			result.Usage.CachedPromptTokens = u.PromptTokensDetails.CachedTokens
+		}
+		if u.CompletionTokensDetails != nil {
+			result.Usage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+		}
 	}
 	return result, nil
 }

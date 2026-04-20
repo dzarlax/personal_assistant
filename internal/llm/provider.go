@@ -54,6 +54,7 @@ type ToolCall struct {
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
+	Usage     Usage // populated by providers that report token counts; zero-value otherwise
 }
 
 type Provider interface {
