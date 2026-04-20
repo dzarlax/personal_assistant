@@ -331,6 +331,20 @@ The admin API never imports the Authentik library — it only _trusts_ the forwa
 
 **Legacy migration:** `Router.SetPersistPath("config/routing.json")` still wires up the old file path. On first start, `LoadPersistedOverrides` imports the file into the settings store and deletes it; subsequent starts read only from the store. The file path can be removed from deployments after the first successful run, but leaving it is harmless.
 
+### Config layering
+
+`config.yaml` is **baked into the Docker image** at `/app/config/config.yaml` and carries bootstrap defaults only. Production deploys do not mount a config directory. Three tiers:
+
+- **Secrets** → env vars (`TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `CLAUDE_BRIDGE_TOKEN`, `TAVILY_API_KEY`, `AA_API_KEY`, optional `OPENROUTER_BASE_URL` / `CLAUDE_BRIDGE_URL` / `OLLAMA_BASE_URL` / `MCP_BRIDGE_EXPORT_PATH`)
+- **Runtime state** → `kv_settings`:
+  - `routing.overrides` (JSON): role→slot + per-slot `SlotOverrides{Provider, Model}`
+  - `prompts.system`, `prompts.classifier`
+  - `cfg.*` scalars: `classifier_timeout`, `tool_filter_top_k`, `web_search_enabled` / `web_search_provider`, `web_fetch_enabled`, `filesystem_enabled`, `tts_enabled` / `tts_voice`, `voice_api_chat_id`, `admin_trust_forward_auth`
+  - `cfg.mcp.servers` (JSON map — source of truth for MCP list)
+- **Bootstrap defaults** → baked `config.yaml` (7 named slots: simple/default/complex/classifier/compaction/fallback/multimodal)
+
+Admin UI tabs editing these: **Routing & Models**, **Analytics**, **Prompts**, **Settings**, **MCP**. First boot with a populated `config/mcp.json` auto-migrates the file into `cfg.mcp.servers` so the mount can be removed on the next deploy. Claude Bridge MCP sync: when `MCP_BRIDGE_EXPORT_PATH` is set, every save mirrors the list to that path in Claude Desktop format (atomic tempfile+rename).
+
 ### Adding multimodal content types
 
 `llm.Message.Parts []ContentPart` supports `"text"`, `"image_url"`, `"input_audio"`. Audio is used for voice message transcription (Telegram OGG → Gemini `input_audio`). Non-vision providers replace `image_url` with `[image]` and `input_audio` with `[audio]` text placeholders.

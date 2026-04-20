@@ -4,14 +4,14 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 ## Features
 
-- **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner (supports local models via llama.cpp server)
-- **OpenRouter-centric** — cloud LLMs (DeepSeek, Qwen, Claude, Gemini, Llama, and 300+ more) accessed through a single OpenRouter API key with app-attribution headers, per-upstream retries, and tool-call-aware provider selection. Define as many named OpenRouter slots as you want and assign each to a different routing role.
-- **Vision- and tool-aware routing** — model capabilities (vision, tool calling, reasoning, prices, context length) are fetched from OpenRouter's `/api/v1/models` at startup, cached in the database, and used by the router to pick the right model per request. Vision-required messages automatically fall through to a capable model.
-- **Runtime model swaps** — change the model id backing any OpenRouter slot without restarting or editing YAML. Selections persist in a DB-backed settings store (`kv_settings` table), survive restarts, and sync across local Ollama + Claude bridge untouched.
-- **Admin UI** — htmx-driven web dashboard split into two tabs: **Routing & Models** (role assignments, OpenRouter catalog browser with Pareto-frontier Suggest recommendations scored by real AA benchmarks) and **Analytics** (Usage & Cost).
+- **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; Gemini-only multimodal role for images/audio; classifier-based routing to the reasoner
+- **Virtual slots** — one slot per routing role (simple/default/complex/classifier/compaction/fallback/multimodal). Each slot can be backed by any provider type (OpenRouter, Gemini direct, or Claude Bridge) and any model from that provider's catalog. Cross-provider swaps happen at runtime via the admin UI, no restart.
+- **Vision- and tool-aware routing** — model capabilities (vision, tool calling, reasoning, prices, context length) are fetched at startup from both OpenRouter's `/api/v1/models` and Google's `/v1beta/models`, cached in the database, and used by the router to pick the right model per request. Multimodal role is UI-restricted to Gemini vision models.
+- **Runtime model + provider swaps** — change the provider type AND model id backing any role without restarting or editing YAML. Selections persist in `kv_settings.routing.overrides.SlotOverrides` and survive restarts; `BackendFactory` rebuilds the provider instance when the type changes.
+- **Admin UI** — htmx-driven web dashboard with five tabs: **Routing & Models** (per-role provider+model, OR/Gemini catalog browser with Pareto-frontier Suggest scored by AA benchmarks), **Analytics** (usage & cost), **Prompts** (system + classifier prompt overrides), **Settings** (scalar config — classifier_timeout, tool_filter_top_k, feature flags, tts.voice, etc.), and **MCP** (add/edit/delete MCP servers; auto-mirrors to Claude Bridge workspace when `MCP_BRIDGE_EXPORT_PATH` is set).
 - **Usage & cost analytics** — every LLM call logged to a `usage_log` table with token counts (incl. cached prompt / reasoning splits), latency, and authoritative USD cost from OpenRouter's `usage.cost` / Claude Bridge's `total_cost_usd`; admin dashboard at `/analytics` shows totals cards with monthly forecast, daily stacked charts, top models by cost, role breakdown, cache hit rate, reasoning overhead, and "expensive turns" with question/answer JOIN via `messages` FKs.
 - **Claude via bridge** — use Claude (Anthropic Max subscription) as a provider through a lightweight host-side bridge service that wraps `claude -p` CLI; no separate API key needed
-- **Local Ollama** — native `/api/chat` provider for local Ollama instances (typically used as the cheap/fast classifier via small models like Qwen 3 0.6B on host GPU)
+- **Local Ollama** — native `/api/chat` provider; still usable as an inference slot via the admin UI, but default production deploys route the classifier through Gemini/OpenRouter (Ollama stays available for embedding workloads and experimental local models)
 - **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline; replies include both text and a voice message via Edge TTS
 - **Voice API + Atom Echo** — HTTP and WebSocket voice API for hardware voice assistants; ships with ESPHome firmware for M5Stack Atom Echo (push-to-talk, LED feedback, streaming audio over WebSocket)
 - **Text-to-speech** — Edge TTS (Microsoft) integration: no API key, high quality Russian/English voices, MP3 output for Telegram, WAV for hardware devices
@@ -61,26 +61,29 @@ make logs
 
 ### Production server (no source code)
 
+`config.yaml` is baked into the Docker image — production deploys only need
+`docker-compose.yml` and `.env`. Per-deployment overrides (routing, prompts,
+MCP servers, scalar settings) live in the database and are edited through
+the admin UI after first boot.
+
 ```bash
-mkdir -p ~/personal_assistant/{config,data,bridge}
+mkdir -p ~/personal_assistant/{data,bridge}
 cd ~/personal_assistant
 
-# Download docker-compose and example configs
+# Download docker-compose and the .env template
 REPO="https://raw.githubusercontent.com/dzarlax/personal_assistant/main"
 curl -sLO "$REPO/docker-compose.yml"
 curl -sL "$REPO/.env.example" -o .env
-curl -sL "$REPO/config/config.yaml.example" -o config/config.yaml
-curl -sL "$REPO/config/mcp.json.example" -o config/mcp.json
-curl -sL "$REPO/config/system_prompt.md.example" -o config/system_prompt.md
 curl -sL "$REPO/bridge/update.sh" -o bridge/update.sh && chmod +x bridge/update.sh
 
 # Fill in your API keys and Telegram token
 nano .env
-nano config/config.yaml
 
 # Start
 docker compose up -d
 ```
+
+After the first boot, open the admin UI (`/`) and use the **Routing & Models**, **Prompts**, **Settings**, and **MCP** tabs to customise your deployment without touching files.
 
 **Get your Telegram chat ID:** send `/start` to [@userinfobot](https://t.me/userinfobot).
 
