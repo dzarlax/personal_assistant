@@ -178,13 +178,19 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Overlay AA Intelligence Index scores if configured.
+	// Overlay AA Intelligence Index scores if configured — always re-fetch on
+	// manual Refresh (bypass cache) and update the stored cache.
 	if aaKey := s.cfgRef.ArtificialAnalysisAPIKey; aaKey != "" {
-		if scores, aaErr := llm.FetchArtificialAnalysisScores(ctx, aaKey); aaErr != nil {
-			s.logger.Warn("AA scores refresh failed", "err", aaErr)
+		if models, aaErr := llm.FetchArtificialAnalysisData(ctx, aaKey); aaErr != nil {
+			s.logger.Warn("AA data refresh failed", "err", aaErr)
 		} else {
-			llm.MergeAAScores(caps, scores)
-			s.logger.Info("AA scores refreshed", "count", len(scores))
+			llm.MergeAAScores(caps, models)
+			s.logger.Info("AA data refreshed", "models", len(models))
+			if s.settings != nil {
+				if storeErr := llm.StoreAACache(ctx, s.settings, models); storeErr != nil {
+					s.logger.Warn("AA cache store failed", "err", storeErr)
+				}
+			}
 		}
 	}
 

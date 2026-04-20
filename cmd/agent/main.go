@@ -301,7 +301,8 @@ func main() {
 
 	if cfg.AdminAPI.Enabled {
 		capStore, _ := s.(llm.CapabilityStore)
-		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, cfg, logger)
+		settingsStore, _ := s.(llm.SettingsStore)
+		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, settingsStore, cfg, logger)
 		if err := adminSrv.Start(); err != nil {
 			logger.Error("admin API failed to start", "err", err)
 		} else {
@@ -427,16 +428,19 @@ func hydrateOpenRouterCapabilities(cfg *config.Config, providers map[string]llm.
 	}
 }
 
-// hydrateArtificialAnalysisScores fetches Intelligence Index scores from
-// Artificial Analysis and merges them into the CapabilityStore. Requires
-// AA_API_KEY in config or environment. Silently skips when not configured.
+// hydrateArtificialAnalysisScores loads AA model data (from cache or live API)
+// and merges Intelligence Index scores into the CapabilityStore.
+// Silently skips when not configured.
 func hydrateArtificialAnalysisScores(cfg *config.Config, s store.Store, logger *slog.Logger) {
 	apiKey := cfg.ArtificialAnalysisAPIKey
 	if apiKey == "" {
 		return
 	}
-
 	capStore, ok := s.(llm.CapabilityStore)
+	if !ok {
+		return
+	}
+	settings, ok := s.(llm.SettingsStore)
 	if !ok {
 		return
 	}
@@ -444,19 +448,34 @@ func hydrateArtificialAnalysisScores(cfg *config.Config, s store.Store, logger *
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	scores, err := llm.FetchArtificialAnalysisScores(ctx, apiKey)
+	// Try cache first; fetch from API if absent or expired.
+	var models map[string]llm.AAModelInfo
+	cache, err := llm.LoadAACache(ctx, settings)
 	if err != nil {
-		logger.Warn("artificialanalysis scores fetch failed", "err", err)
-		return
+		logger.Warn("aa cache load failed", "err", err)
+	}
+	if cache != nil {
+		models = cache.Models
+		logger.Info("aa cache loaded", "models", len(models), "age", time.Since(cache.FetchedAt).Round(time.Minute))
+	} else {
+		models, err = llm.FetchArtificialAnalysisData(ctx, apiKey)
+		if err != nil {
+			logger.Warn("artificialanalysis fetch failed", "err", err)
+			return
+		}
+		if storeErr := llm.StoreAACache(ctx, settings, models); storeErr != nil {
+			logger.Warn("aa cache store failed", "err", storeErr)
+		} else {
+			logger.Info("aa cache stored", "models", len(models))
+		}
 	}
 
-	// Load cached caps, overlay scores, write back.
 	caps, err := capStore.GetAllCapabilities(ctx, "openrouter")
 	if err != nil {
-		logger.Warn("failed to load cached capabilities for AA merge", "err", err)
+		logger.Warn("failed to load capabilities for AA merge", "err", err)
 		return
 	}
-	llm.MergeAAScores(caps, scores)
+	llm.MergeAAScores(caps, models)
 	updated := 0
 	for id, c := range caps {
 		if c.Score == 0 {
@@ -468,5 +487,5 @@ func hydrateArtificialAnalysisScores(cfg *config.Config, s store.Store, logger *
 			updated++
 		}
 	}
-	logger.Info("artificialanalysis scores merged", "total", len(scores), "updated", updated)
+	logger.Info("artificialanalysis scores merged", "models", len(models), "updated", updated)
 }

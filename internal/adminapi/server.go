@@ -22,7 +22,8 @@ type Server struct {
 	cfg      config.AdminAPIConfig
 	router   *llm.Router
 	capStore llm.CapabilityStore
-	cfgRef   *config.Config // needed for enumerating OpenRouter slots
+	settings llm.SettingsStore // for AA cache persistence; may be nil
+	cfgRef   *config.Config    // needed for enumerating OpenRouter slots
 	logger   *slog.Logger
 
 	httpSrv *http.Server
@@ -30,7 +31,7 @@ type Server struct {
 
 // New constructs the admin API server but does not start it. Call Start to
 // bind the listener.
-func New(cfg config.AdminAPIConfig, router *llm.Router, capStore llm.CapabilityStore, cfgRef *config.Config, logger *slog.Logger) *Server {
+func New(cfg config.AdminAPIConfig, router *llm.Router, capStore llm.CapabilityStore, settings llm.SettingsStore, cfgRef *config.Config, logger *slog.Logger) *Server {
 	if cfg.ForwardAuthHeader == "" {
 		cfg.ForwardAuthHeader = "X-authentik-username"
 	}
@@ -38,6 +39,7 @@ func New(cfg config.AdminAPIConfig, router *llm.Router, capStore llm.CapabilityS
 		cfg:      cfg,
 		router:   router,
 		capStore: capStore,
+		settings: settings,
 		cfgRef:   cfgRef,
 		logger:   logger,
 	}
