@@ -122,8 +122,10 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 
 	// Store user message; embed it if semantic store + MCP embeddings are both available.
 	endEmbed := tr.begin("embed")
-	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
+	queryEmb, userMsgID := a.storeUserMessage(ctx, chatID, userMsg, queryText)
 	endEmbed()
+	// Tag ctx so Router.recordUsage can link usage_log rows to this turn.
+	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID})
 
 	// Auto-compact if needed
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
@@ -226,8 +228,9 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 	queryText := messageText(userMsg)
 
 	endEmbed := tr.begin("embed")
-	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
+	queryEmb, userMsgID := a.storeUserMessage(ctx, chatID, userMsg, queryText)
 	endEmbed()
+	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID})
 
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
 		a.logger.Info("auto-compacting conversation", "chat_id", chatID)
@@ -549,19 +552,20 @@ func (a *Agent) callTool(ctx context.Context, name, argsJSON string) (string, er
 
 // storeUserMessage saves the user message. If the store and MCP client both support
 // embeddings, it also computes and stores the embedding for semantic history retrieval.
-// Returns the embedding (may be nil if unavailable).
-func (a *Agent) storeUserMessage(ctx context.Context, chatID int64, msg llm.Message, text string) []float32 {
+// Returns the embedding (may be nil) and the inserted row's id (0 if the backend
+// does not expose IDs).
+func (a *Agent) storeUserMessage(ctx context.Context, chatID int64, msg llm.Message, text string) ([]float32, int64) {
 	sem, hasSem := a.store.(store.SemanticStore)
 	if hasSem && a.mcp != nil {
 		emb, err := a.mcp.EmbedText(ctx, text)
 		if err == nil {
-			sem.AddMessageWithEmbedding(chatID, msg, emb)
-			return emb
+			id := sem.AddMessageWithEmbedding(chatID, msg, emb)
+			return emb, id
 		}
 		a.logger.Info("embedding unavailable, storing without", "chat_id", chatID, "err", err)
 	}
-	a.store.AddMessage(chatID, msg)
-	return nil
+	id := a.store.AddMessage(chatID, msg)
+	return nil, id
 }
 
 // buildCrossSessionContext searches past sessions and returns a formatted block

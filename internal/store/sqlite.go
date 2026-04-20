@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
     completion_tokens    INTEGER NOT NULL DEFAULT 0,
     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens     INTEGER NOT NULL DEFAULT 0,
+    cost_usd             REAL    NOT NULL DEFAULT 0,
     latency_ms           INTEGER NOT NULL DEFAULT 0,
     success              INTEGER NOT NULL DEFAULT 1,
     error_class          TEXT    NOT NULL DEFAULT '',
@@ -99,6 +100,7 @@ func NewSQLite(path string) (*SQLite, error) {
 	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                              //nolint:errcheck
 	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                          //nolint:errcheck
 	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`) //nolint:errcheck
+	db.Exec(`ALTER TABLE usage_log ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`)       //nolint:errcheck
 	return &SQLite{db: db}, nil
 }
 
@@ -117,22 +119,25 @@ func (s *SQLite) GetHistory(chatID int64) []llm.Message {
 	return reverseMessages(scanMessages(rows))
 }
 
-func (s *SQLite) AddMessage(chatID int64, msg llm.Message) {
+func (s *SQLite) AddMessage(chatID int64, msg llm.Message) int64 {
 	s.maybeSessionBreak(chatID, msg.Role)
 	tcJSON, tcID := encodeToolFields(msg)
 	partsJSON := encodePartsJSON(msg.Parts)
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID)
 	if err != nil {
 		slog.Error("sqlite AddMessage failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
+		return 0
 	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
 // AddMessageWithEmbedding stores msg together with its pre-computed embedding.
 // Only user messages need embeddings; other roles are stored with embedding=NULL.
-func (s *SQLite) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) {
+func (s *SQLite) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) int64 {
 	s.maybeSessionBreak(chatID, msg.Role)
 	tcJSON, tcID := encodeToolFields(msg)
 	partsJSON := encodePartsJSON(msg.Parts)
@@ -140,13 +145,16 @@ func (s *SQLite) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []fl
 	if len(emb) > 0 {
 		embBlob = floatsToBlob(emb)
 	}
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id, embedding)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID, embBlob)
 	if err != nil {
 		slog.Error("sqlite AddMessageWithEmbedding failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
+		return 0
 	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
 // maybeSessionBreak inserts a reset marker when a user message arrives after a long idle period.
@@ -712,12 +720,12 @@ func (s *SQLite) PutUsage(ctx context.Context, u llm.UsageLog) (int64, error) {
 		INSERT INTO usage_log (
 			provider, model_id, role, chat_id,
 			prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
-			latency_ms, success, error_class, request_id, tool_call_count,
+			cost_usd, latency_ms, success, error_class, request_id, tool_call_count,
 			user_message_id, assistant_message_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.Provider, u.ModelID, u.Role, u.ChatID,
 		u.PromptTokens, u.CompletionTokens, u.CachedPromptTokens, u.ReasoningTokens,
-		u.LatencyMs, boolToInt(u.Success), u.ErrorClass, u.RequestID, u.ToolCallCount,
+		u.Cost, u.LatencyMs, boolToInt(u.Success), u.ErrorClass, u.RequestID, u.ToolCallCount,
 		nullableInt64(u.UserMessageID), nullableInt64(u.AssistantMessageID))
 	if err != nil {
 		return 0, fmt.Errorf("put usage: %w", err)

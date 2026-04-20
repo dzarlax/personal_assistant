@@ -86,6 +86,7 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			completion_tokens    INTEGER     NOT NULL DEFAULT 0,
 			cached_prompt_tokens INTEGER     NOT NULL DEFAULT 0,
 			reasoning_tokens     INTEGER     NOT NULL DEFAULT 0,
+			cost_usd             DOUBLE PRECISION NOT NULL DEFAULT 0,
 			latency_ms           INTEGER     NOT NULL DEFAULT 0,
 			success              BOOLEAN     NOT NULL DEFAULT TRUE,
 			error_class          TEXT        NOT NULL DEFAULT '',
@@ -94,6 +95,7 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			user_message_id      BIGINT,
 			assistant_message_id BIGINT
 		)`,
+		`ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_chat_ts  ON usage_log(chat_id, ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_user_msg ON usage_log(user_message_id)`,
@@ -214,22 +216,26 @@ func (p *Postgres) GetHistory(chatID int64) []llm.Message {
 	return reverseMessages(scanMessagesPg(rows))
 }
 
-func (p *Postgres) AddMessage(chatID int64, msg llm.Message) {
+func (p *Postgres) AddMessage(chatID int64, msg llm.Message) int64 {
 	ctx := context.Background()
 	p.maybeSessionBreak(ctx, chatID, msg.Role)
 	tcJSON, tcID := encodeToolFields(msg)
 	partsJSON := encodePartsJSON(msg.Parts)
 
-	_, err := p.pool.Exec(ctx, `
+	var id int64
+	err := p.pool.QueryRow(ctx, `
 		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id`,
+		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID).Scan(&id)
 	if err != nil {
 		slog.Error("pg AddMessage failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
+		return 0
 	}
+	return id
 }
 
-func (p *Postgres) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) {
+func (p *Postgres) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) int64 {
 	ctx := context.Background()
 	p.maybeSessionBreak(ctx, chatID, msg.Role)
 	tcJSON, tcID := encodeToolFields(msg)
@@ -240,13 +246,17 @@ func (p *Postgres) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []
 		embBlob = floatsToBlob(emb)
 	}
 
-	_, err := p.pool.Exec(ctx, `
+	var id int64
+	err := p.pool.QueryRow(ctx, `
 		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id, embedding)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID, embBlob)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`,
+		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID, embBlob).Scan(&id)
 	if err != nil {
 		slog.Error("pg AddMessageWithEmbedding failed", "chat_id", chatID, "role", msg.Role, "content_len", len(msg.Content), "err", err)
+		return 0
 	}
+	return id
 }
 
 func (p *Postgres) maybeSessionBreak(ctx context.Context, chatID int64, role string) {
@@ -642,13 +652,13 @@ func (p *Postgres) PutUsage(ctx context.Context, u llm.UsageLog) (int64, error) 
 		INSERT INTO usage_log (
 			provider, model_id, role, chat_id,
 			prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
-			latency_ms, success, error_class, request_id, tool_call_count,
+			cost_usd, latency_ms, success, error_class, request_id, tool_call_count,
 			user_message_id, assistant_message_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id`,
 		u.Provider, u.ModelID, u.Role, u.ChatID,
 		u.PromptTokens, u.CompletionTokens, u.CachedPromptTokens, u.ReasoningTokens,
-		u.LatencyMs, u.Success, u.ErrorClass, u.RequestID, u.ToolCallCount,
+		u.Cost, u.LatencyMs, u.Success, u.ErrorClass, u.RequestID, u.ToolCallCount,
 		u.UserMessageID, u.AssistantMessageID,
 	).Scan(&id)
 	if err != nil {

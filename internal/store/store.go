@@ -15,9 +15,10 @@ type ChatStats struct {
 }
 
 // Store is the interface for conversation history storage.
+// AddMessage returns the new row's id (0 if the backend has no IDs, e.g. memory).
 type Store interface {
 	GetHistory(chatID int64) []llm.Message
-	AddMessage(chatID int64, msg llm.Message)
+	AddMessage(chatID int64, msg llm.Message) int64
 	ClearHistory(chatID int64)
 }
 
@@ -52,7 +53,8 @@ type HistorySnippet struct {
 type SemanticStore interface {
 	CompactableStore
 	// AddMessageWithEmbedding stores msg and its embedding in one write.
-	AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32)
+	// Returns the new row's id (0 if the backend has no IDs).
+	AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) int64
 	// GetSemanticHistory returns the last recentN messages unconditionally, plus up
 	// to topK older conversational turns ranked by cosine similarity to queryEmb.
 	// Results are always returned in chronological order.

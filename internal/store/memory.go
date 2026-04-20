@@ -33,7 +33,7 @@ func (m *Memory) GetHistory(chatID int64) []llm.Message {
 	return result
 }
 
-func (m *Memory) AddMessage(chatID int64, msg llm.Message) {
+func (m *Memory) AddMessage(chatID int64, msg llm.Message) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -42,6 +42,7 @@ func (m *Memory) AddMessage(chatID int64, msg llm.Message) {
 	if len(m.sessions[chatID]) > maxHistory {
 		m.sessions[chatID] = m.sessions[chatID][len(m.sessions[chatID])-maxHistory:]
 	}
+	return 0 // memory backend has no stable IDs
 }
 
 func (m *Memory) ClearHistory(chatID int64) {

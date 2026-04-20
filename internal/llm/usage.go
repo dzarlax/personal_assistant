@@ -21,6 +21,7 @@ type UsageLog struct {
 	CompletionTokens   int
 	CachedPromptTokens int // subset of PromptTokens that hit provider's prompt cache (Anthropic/OpenAI)
 	ReasoningTokens    int // for thinking-enabled models: tokens spent on internal reasoning (billed as completion but semantically distinct)
+	Cost               float64 // USD, authoritative per-request cost reported by the provider (OpenRouter's usage.cost). 0 when the provider doesn't surface this.
 	LatencyMs          int
 	Success            bool
 	ErrorClass         string // "" / "rate_limit" / "5xx" / "network" / "timeout" / "other"
@@ -45,6 +46,7 @@ type Usage struct {
 	CompletionTokens   int
 	CachedPromptTokens int
 	ReasoningTokens    int
+	Cost               float64 // USD (OpenRouter `usage.cost`); 0 when provider doesn't report it
 	RequestID          string
 }
 

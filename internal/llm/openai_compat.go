@@ -214,11 +214,14 @@ type rawChatResponse struct {
 
 // rawUsage covers OpenAI-compatible usage fields plus the nested *_details
 // blocks that OpenRouter / Anthropic / OpenAI populate for prompt caching
-// and reasoning tokens.
+// and reasoning tokens. `cost` is OpenRouter-specific and surfaces the
+// actual USD amount OR charged for this request (after routing to the
+// selected upstream + any volume discounts).
 type rawUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
+	PromptTokens        int     `json:"prompt_tokens"`
+	CompletionTokens    int     `json:"completion_tokens"`
+	TotalTokens         int     `json:"total_tokens"`
+	Cost                float64 `json:"cost"`
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
@@ -295,6 +298,7 @@ func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, sys
 		result.Usage = Usage{
 			PromptTokens:     u.PromptTokens,
 			CompletionTokens: u.CompletionTokens,
+			Cost:             u.Cost,
 			RequestID:        chatResp.ID,
 		}
 		if u.PromptTokensDetails != nil {
@@ -485,6 +489,7 @@ func (p *openAICompatProvider) readSSE(resp *http.Response, ch chan<- StreamChun
 		if delta.Usage != nil {
 			usage.PromptTokens = delta.Usage.PromptTokens
 			usage.CompletionTokens = delta.Usage.CompletionTokens
+			usage.Cost = delta.Usage.Cost
 			if delta.Usage.PromptTokensDetails != nil {
 				usage.CachedPromptTokens = delta.Usage.PromptTokensDetails.CachedTokens
 			}

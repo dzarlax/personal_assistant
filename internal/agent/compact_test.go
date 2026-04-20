@@ -91,7 +91,7 @@ func newMockCompactableStore(charCount int) *mockCompactableStore {
 }
 
 func (m *mockCompactableStore) GetHistory(_ int64) []llm.Message        { return nil }
-func (m *mockCompactableStore) AddMessage(_ int64, _ llm.Message)       {}
+func (m *mockCompactableStore) AddMessage(_ int64, _ llm.Message) int64 { return 0 }
 func (m *mockCompactableStore) ClearHistory(_ int64)                    {}
 func (m *mockCompactableStore) AddSummary(_ int64, _ string)            {}
 func (m *mockCompactableStore) MarkCompacted(_ []int64) error           { return nil }

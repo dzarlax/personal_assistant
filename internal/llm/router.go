@@ -340,16 +340,15 @@ func (r *Router) SetClassifierMinLen(n int) {
 }
 
 func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
-	provider := r.pick(ctx, messages)
-	primaryKey := r.keyFor(provider)
+	provider, role := r.pick(ctx, messages)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
-	r.lastRoutedKey = primaryKey
+	r.lastRoutedKey = r.keyFor(provider)
 	r.mu.Unlock()
 
 	start := time.Now()
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
-	r.recordUsage(ctx, provider, primaryKey, resp, err, time.Since(start))
+	r.recordUsage(ctx, provider, role, resp, err, time.Since(start))
 
 	if err != nil && isUnavailable(err) {
 		// Build fallback chain: override → default → fallback.
@@ -403,6 +402,7 @@ func (r *Router) recordUsage(ctx context.Context, p Provider, role string, resp 
 		CompletionTokens:   resp.Usage.CompletionTokens,
 		CachedPromptTokens: resp.Usage.CachedPromptTokens,
 		ReasoningTokens:    resp.Usage.ReasoningTokens,
+		Cost:               resp.Usage.Cost,
 		LatencyMs:          int(latency / time.Millisecond),
 		Success:            callErr == nil,
 		ErrorClass:         ClassifyErrorClass(callErr),
@@ -435,27 +435,26 @@ func splitProviderName(name string) (provider, model string) {
 // ChatStream returns a streaming channel if the current provider supports it.
 // Falls back to wrapping a synchronous Chat() in a single-chunk channel.
 func (r *Router) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
-	provider := r.pick(ctx, messages)
-	primaryKey := r.keyFor(provider)
+	provider, role := r.pick(ctx, messages)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
-	r.lastRoutedKey = primaryKey
+	r.lastRoutedKey = r.keyFor(provider)
 	r.mu.Unlock()
 	if sp, ok := provider.(StreamProvider); ok {
 		ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
 		if err != nil {
 			// Even a start-of-stream failure deserves a usage record with
 			// error_class set so dashboards see it.
-			r.recordUsage(ctx, provider, primaryKey, Response{}, err, 0)
+			r.recordUsage(ctx, provider, role, Response{}, err, 0)
 			if isUnavailable(err) {
 				return r.syncFallbackStream(ctx, provider, messages, systemPrompt, tools, err)
 			}
 			return nil, err
 		}
-		return r.instrumentedStream(ctx, provider, primaryKey, ch), nil
+		return r.instrumentedStream(ctx, provider, role, ch), nil
 	}
 	// Provider does not stream — wrap synchronous call.
-	return r.syncStream(ctx, provider, messages, systemPrompt, tools)
+	return r.syncStream(ctx, provider, role, messages, systemPrompt, tools)
 }
 
 // instrumentedStream tees the provider's stream to the caller and records a
@@ -484,8 +483,7 @@ func (r *Router) instrumentedStream(ctx context.Context, provider Provider, role
 // syncStream wraps a synchronous Chat() call in a channel. Usage is recorded
 // via the same path as Router.Chat so streaming callers that hit non-stream
 // providers still produce UsageLog rows.
-func (r *Router) syncStream(ctx context.Context, provider Provider, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
-	role := r.keyFor(provider)
+func (r *Router) syncStream(ctx context.Context, provider Provider, role string, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
 	start := time.Now()
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
 	r.recordUsage(ctx, provider, role, resp, err, time.Since(start))
@@ -522,21 +520,22 @@ func (r *Router) syncFallbackStream(ctx context.Context, failed Provider, messag
 			r.recordUsage(ctx, next, "fallback", Response{}, err, 0)
 		}
 		// Otherwise sync.
-		return r.syncStream(ctx, next, messages, systemPrompt, tools)
+		return r.syncStream(ctx, next, "fallback", messages, systemPrompt, tools)
 	}
 	return nil, origErr
 }
 
 // SupportsStreaming returns true if the currently active provider implements StreamProvider.
 func (r *Router) SupportsStreaming() bool {
-	provider := r.pick(context.Background(), nil)
+	provider, _ := r.pick(context.Background(), nil)
 	_, ok := provider.(StreamProvider)
 	return ok
 }
 
 // Name returns the name of the currently active provider (respecting override).
 func (r *Router) Name() string {
-	return r.pick(context.Background(), nil).Name()
+	p, _ := r.pick(context.Background(), nil)
+	return p.Name()
 }
 
 // SetOverride sets a named model override. Pass "" to clear. Returns error if name is unknown.
@@ -590,10 +589,16 @@ func (r *Router) ProviderNames() []string {
 	return names
 }
 
-func (r *Router) pick(ctx context.Context, messages []Message) Provider {
+// pick selects the provider for this request AND returns the logical routing
+// role that drove the decision (simple/default/complex/multimodal/override/
+// tool-continuation). Role is what ends up in usage_log — conceptually
+// useful for analytics. Separate from the provider's slot key (e.g. the same
+// "simple" role may be backed by different slot names across deployments).
+func (r *Router) pick(ctx context.Context, messages []Message) (Provider, string) {
 	r.mu.RLock()
 	cfg := r.cfg
 	override := r.override
+	lastRoutedKey := r.lastRoutedKey
 	r.mu.RUnlock()
 
 	multimodal := hasMultimodalContent(messages)
@@ -602,7 +607,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		if p := r.get(override); p != nil {
 			if !multimodal || supportsVision(p) {
 				slog.Info("routing", "reason", "override", "provider", p.Name())
-				return p
+				return p, "override"
 			}
 			// Override doesn't support vision — fall through to multimodal
 		}
@@ -612,23 +617,23 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	if multimodal {
 		if p := r.get(cfg.Simple); p != nil && supportsVision(p) {
 			slog.Info("routing", "reason", "simple+vision", "provider", p.Name())
-			return p
+			return p, "simple"
 		}
 		if p := r.get(cfg.Default); p != nil && supportsVision(p) {
 			slog.Info("routing", "reason", "default+vision", "provider", p.Name())
-			return p
+			return p, "default"
 		}
 		if p := r.get(cfg.Multimodal); p != nil {
 			slog.Info("routing", "reason", "multimodal", "provider", p.Name())
-			return p
+			return p, "multimodal"
 		}
 	}
 
 	// Tool continuation — keep using the same provider that started the tool loop.
-	if hasToolMessages(messages) && r.lastRoutedKey != "" {
-		if last := r.get(r.lastRoutedKey); last != nil {
+	if hasToolMessages(messages) && lastRoutedKey != "" {
+		if last := r.get(lastRoutedKey); last != nil {
 			slog.Info("routing", "reason", "tool-continuation", "provider", last.Name())
-			return last
+			return last, "tool-continuation"
 		}
 	}
 
@@ -644,12 +649,12 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 			case 1:
 				if p := r.get(cfg.Simple); p != nil {
 					slog.Info("routing", "reason", "classifier→simple", "level", 1, "provider", p.Name())
-					return p
+					return p, "simple"
 				}
 			case 3:
 				if p := r.get(cfg.Complex); p != nil {
 					slog.Info("routing", "reason", "classifier→complex", "level", 3, "provider", p.Name())
-					return p
+					return p, "complex"
 				}
 			}
 			// level 2 or fallback → default
@@ -658,13 +663,13 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 
 	if p := r.get(cfg.Default); p != nil {
 		slog.Info("routing", "reason", "default", "provider", p.Name())
-		return p
+		return p, "default"
 	}
 	// Should never happen if config is valid
 	for _, p := range r.providers {
-		return p
+		return p, "default"
 	}
-	return nil
+	return nil, ""
 }
 
 func (r *Router) get(key string) Provider {
