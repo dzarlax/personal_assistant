@@ -182,6 +182,33 @@ CREATE TABLE messages (
 
 Migrations run at startup with `ALTER TABLE ADD COLUMN` (idempotent in SQLite). `GetHistory` returns last 30 non-compacted messages. Queries always filter `id > lastResetID`.
 
+### Usage tracking (usage_log)
+
+Every LLM call produces one row in `usage_log`. Schema lives in both SQLite and Postgres migrations and is owned by `llm.UsageStore`:
+
+```sql
+CREATE TABLE usage_log (
+    id, ts, provider, model_id, role, chat_id,
+    prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
+    cost_usd, latency_ms, success, error_class, request_id, tool_call_count,
+    user_message_id, assistant_message_id  -- FKs to messages.id (nullable)
+);
+```
+
+Authoritative `cost_usd` comes from OpenRouter's `usage.cost` (after upstream routing) or Claude Bridge's `total_cost_usd` (from `claude -p --output-format json`). Gemini/Ollama/local providers report tokens only; cost = 0 for them.
+
+**TurnMeta ctx pattern** (`internal/llm/usage.go`) — `llm.TurnMeta{ChatID, UserMessageID, RoleHint, LastUsageID *int64}` is threaded through `context.Context` via `WithTurnMeta`/`TurnMetaFrom`. `agent.Process` sets it after storing the user message (capturing the inserted `id` from `Store.AddMessage` which now returns `int64`). Router's `recordUsage` reads from ctx, and writes the new usage_log row id through the `LastUsageID` pointer so `agent.backfillAssistantMsgID` can pair the final call's row with the assistant response after `store.AddMessage` returns its id.
+
+**Role column** stores the logical routing role (`simple`/`default`/`complex`/`multimodal`/`classifier`/`compaction`/`fallback`/`override`/`tool-continuation`), **not** the slot name. `Router.pick()` returns `(Provider, role string)`; direct-dispatch callers (compaction, classifier) use `Router.RecordCall` to log with the correct role.
+
+### Admin UI analytics (adminapi `/analytics`)
+
+`internal/adminapi/usage.go` implements a Usage & Cost dashboard at `/analytics`. Aggregation methods on `UsageStore`: `UsageTotals`, `UsageByDay`, `UsageByModel`, `UsageByRole`, `ExpensiveTurns` (JOINs usage_log ↔ messages via FKs to show question/answer per expensive turn).
+
+Page structure uses shared `templates/partials_layout.html` with `{{define "admin_head"}}` (CSS) + `{{define "admin_tabs"}}`. Each page passes `ActiveTab` ("routing" or "analytics") to highlight the correct tab. `/usage` remains an htmx partial endpoint that `/analytics` lazy-loads.
+
+Daily chart: two stacked SVG panels (calls top, cost bottom) with synchronized X-axis slot positions — day columns line up vertically. Each panel has its own Y-axis with 3 tick labels (0/mid/max), dashed horizontal guides, and tooltips with both metrics on every bar. Sizes: 520×100 per panel, capped at 640×160 in CSS.
+
 ### CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `go test -race -count=1 ./...` before Docker build and push. A failed test prevents the image from being published.
