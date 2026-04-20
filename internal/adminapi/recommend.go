@@ -9,14 +9,11 @@ import (
 
 // Role-driven recommendation engine. When the user clicks "Suggest" next to a
 // routing role in the admin UI, the model browser applies the matching
-// preset: a set of include/exclude filters + a sort strategy. Result: a
-// curated but honest list of candidates — no opaque "quality score", just
-// transparent filters you can see and relax.
+// preset: a set of include/exclude filters + a Pareto frontier on
+// (role-specific quality metric, price). Result: every model shown is a
+// valid trade-off — no model in the list is strictly dominated (worse AND
+// more expensive) by another.
 
-// multilingualRegex matches OpenRouter model id prefixes that have proven
-// reasonable non-English (specifically Russian) support. Smaller English-
-// primary variants (gemma-small, phi-mini, nemotron) and Cohere command-r
-// small versions are intentionally NOT included.
 var multilingualRegex = regexp.MustCompile(
 	`^(` +
 		`deepseek/(deepseek-chat|deepseek-r1|deepseek-v3)` +
@@ -31,80 +28,82 @@ var multilingualRegex = regexp.MustCompile(
 		`)`,
 )
 
-// excludedVendorsRegex — providers we can reach directly elsewhere (Anthropic
-// via the bridge, Google directly); going through OpenRouter for them pays a
-// margin we don't need to pay.
 var excludedVendorsRegex = regexp.MustCompile(`^(anthropic|openai)/`)
 
-// specialisedCoderRegex — fine-tuned on code; poor fit for general chat.
 var specialisedCoderRegex = regexp.MustCompile(`-coder(-|$|:)`)
 
-// specialisedVisionRegex — vision-only (-vl) variants are saved for the
-// multimodal preset; they're needlessly expensive for plain text.
 var specialisedVisionRegex = regexp.MustCompile(`-vl-`)
 
 // thinkingRegex matches model ids that are actually frontier reasoners — the
 // `reasoning: true` capability flag alone is not enough (8B models also set
-// it just because the API accepts a reasoning parameter). Match the naming
-// conventions of genuine reasoning variants.
+// it just because the API accepts a reasoning parameter).
 var thinkingRegex = regexp.MustCompile(
 	`(-thinking|:thinking|/qwq|/deepseek-r[0-9]|-r1(-|$)|-reasoner)`,
 )
 
-// sortStrategy chooses the ordering key for a preset.
-type sortStrategy int
+// paretoAxes returns (quality, price) for a model under a given role.
+type paretoAxes func(m uiModel) (quality, price float64)
 
-const (
-	sortByPromptPrice sortStrategy = iota
-	sortByCompletionPrice
-	sortByScorePerDollar // AA Intelligence Index / prompt price (higher = better value)
-)
-
-// rolePreset describes how to filter + order the OpenRouter catalog for a
-// given routing role.
+// rolePreset describes how to filter + rank models for a given routing role.
 type rolePreset struct {
-	// human-readable summary shown in the banner
 	Description string
-	// check each capability; models that fail any return false
-	Filter func(caps llm.Capabilities, modelID string) bool
-	// ordering
-	Sort sortStrategy
+	Filter      func(caps llm.Capabilities, modelID string, aa llm.AAModelInfo) bool
+	Axes        paretoAxes
 }
 
-// rolePresets — one entry per routing role. Absent role name = no preset
-// available (all filters off).
+// bestAgentic — use AA Agentic Index when available; fall back to Intelligence
+// Index for untested models (scaled down to de-rank vs. tested models).
+func bestAgentic(m uiModel) float64 {
+	if m.AgenticIndex > 0 {
+		return m.AgenticIndex
+	}
+	return m.Score
+}
+
+// inverseTTFT — classifier emits one digit; TTFT (time-to-first-token)
+// dominates total latency. Returns 0 when no TTFT data (excluded by
+// paretoFrontier's quality>0 guard).
+func inverseTTFT(m uiModel) float64 {
+	if m.TTFT <= 0 {
+		return 0
+	}
+	return 1.0 / m.TTFT
+}
+
 var rolePresets = map[string]rolePreset{
 	"simple": {
-		Description: "tools + multilingual, ≤ $1/M prompt, no coder/vl/free variants — sorted by AA score/price",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "tools + multilingual, ≤ $0.2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, prompt price).",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
 				!isFreeVariant(id) &&
 				c.Tools &&
-				c.PromptPrice > 0 && c.PromptPrice <= 1.0
+				c.ContextLength >= 32000 &&
+				c.PromptPrice > 0 && c.PromptPrice <= 0.2
 		},
-		Sort: sortByScorePerDollar,
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
 	},
 
 	"default": {
-		Description: "tools + multilingual, ≤ $2/M prompt, no coder/vl/free variants — sorted by AA score/price",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, prompt price).",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
 				!isFreeVariant(id) &&
 				c.Tools &&
+				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Sort: sortByScorePerDollar,
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
 	},
 
 	"complex": {
-		Description: "frontier reasoners only (models with -thinking / -r1 / qwq in name). Tools + multilingual, ≤ $5/M prompt. Claude via bridge is the preferred choice when configured.",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "frontier reasoners (thinking/r1/qwq) with tools + multilingual, ≤ $5/M prompt, ctx ≥ 64k. Pareto frontier on (AA Agentic Index, prompt price). Claude via bridge is preferred when configured.",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
@@ -112,83 +111,126 @@ var rolePresets = map[string]rolePreset{
 				!isFreeVariant(id) &&
 				thinkingRegex.MatchString(id) &&
 				c.Tools && c.Reasoning &&
+				c.ContextLength >= 64000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 5.0
 		},
-		Sort: sortByPromptPrice,
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
 	},
 
 	"multimodal": {
-		Description: "vision-capable Gemini/Qwen VL; note: native audio transcription only works via direct Gemini (out of OR catalog)",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "vision + tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Intelligence Index, prompt price).",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!isFreeVariant(id) &&
 				c.Vision && c.Tools &&
+				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Sort: sortByPromptPrice,
+		Axes: func(m uiModel) (float64, float64) { return m.Score, m.PromptPrice },
 	},
 
 	"compaction": {
-		Description: "ctx ≥ 32k, multilingual, sorted by COMPLETION price (summaries are output-heavy). No tools required.",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "multilingual, ctx ≥ 64k (long history in, short summary out), completion ≤ $2/M. Pareto frontier on (AA Intelligence Index, completion price).",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
 				!isFreeVariant(id) &&
-				c.ContextLength >= 32000 &&
-				c.CompletionPrice > 0 && c.CompletionPrice <= 1.0
+				c.ContextLength >= 64000 &&
+				c.CompletionPrice > 0 && c.CompletionPrice <= 2.0
 		},
-		Sort: sortByCompletionPrice,
+		Axes: func(m uiModel) (float64, float64) { return m.Score, m.CompletionPrice },
 	},
 
 	"classifier": {
-		Description: "≤ $0.1/M prompt; used for complexity rating (digit output). Local Ollama stays the primary recommendation.",
-		Filter: func(c llm.Capabilities, id string) bool {
+		Description: "≤ $0.1/M prompt, multilingual, no :free (rate-limited on OR). Pareto frontier on (1/TTFT, prompt price) when speed data available, else (AA Intelligence Index, prompt price). Local Ollama stays the primary recommendation.",
+		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
-				c.PromptPrice >= 0 && c.PromptPrice <= 0.1
+				!isFreeVariant(id) &&
+				c.PromptPrice > 0 && c.PromptPrice <= 0.1
 		},
-		Sort: sortByPromptPrice,
+		// Axes selected dynamically in applyPreset (see classifierAxes).
+		Axes: nil,
 	},
 
-	// "fallback" has no preset here — it should use a DIRECT provider
+	// "fallback" has no preset — it should point at a DIRECT provider
 	// (different vendor from the default) to survive an OpenRouter outage.
-	// Browsing OR candidates for it would be misleading, so we leave
-	// the button off in the UI for this role.
 }
 
 func isFreeVariant(modelID string) bool {
 	return len(modelID) > 5 && modelID[len(modelID)-5:] == ":free"
 }
 
-// scorePerDollar returns AA Intelligence Index per USD/1M prompt tokens.
-// Models without a score fall back to sorting by price only (score=0 → value=0,
-// so they appear after scored models).
-func scorePerDollar(score, promptPrice float64) float64 {
-	if score == 0 || promptPrice == 0 {
-		return 0
+// classifierAxes picks (1/TTFT, price) when at least one candidate has TTFT
+// data, otherwise falls back to (Score, price). Mixing two quality scales in
+// the same Pareto frontier would be meaningless, so we pick one globally.
+func classifierAxes(candidates []uiModel) paretoAxes {
+	for _, m := range candidates {
+		if m.TTFT > 0 {
+			return func(m uiModel) (float64, float64) { return inverseTTFT(m), m.PromptPrice }
+		}
 	}
-	return score / promptPrice
+	return func(m uiModel) (float64, float64) { return m.Score, m.PromptPrice }
 }
 
-// applyPreset returns the models matching the preset for role, sorted per
-// the preset's strategy. If the role has no preset, returns nil (caller
-// should fall back to the full catalog).
-func applyPreset(all map[string]llm.Capabilities, role string) []uiModel {
+// paretoFrontier keeps only non-dominated models. A model is also excluded
+// if its quality is 0 — Pareto would otherwise keep untested models at the
+// price floor just because no one beats them on both axes. Requiring quality
+// > 0 means recommendations are always based on real AA data.
+func paretoFrontier(models []uiModel, axes paretoAxes) []uiModel {
+	out := make([]uiModel, 0, len(models))
+	for i, m := range models {
+		qi, pi := axes(m)
+		if qi <= 0 {
+			continue
+		}
+		dominated := false
+		for j, other := range models {
+			if i == j {
+				continue
+			}
+			qj, pj := axes(other)
+			if qj <= 0 {
+				continue
+			}
+			strictlyBetter := (qj > qi && pj <= pi) || (qj >= qi && pj < pi)
+			if strictlyBetter {
+				dominated = true
+				break
+			}
+		}
+		if !dominated {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// applyPreset returns the Pareto-optimal models for the role, sorted by
+// quality descending (best first). If the role has no preset, returns nil.
+// Each returned model has ValuePerDollar populated using the role's axes.
+func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAModelInfo, role string) []uiModel {
 	preset, ok := rolePresets[role]
 	if !ok {
 		return nil
 	}
-	out := make([]uiModel, 0, len(all))
+	candidates := make([]uiModel, 0, len(all))
 	for id, c := range all {
-		if !preset.Filter(c, id) {
+		var aa llm.AAModelInfo
+		if aaModels != nil {
+			if info := llm.LookupAAInfo(id, aaModels); info != nil {
+				aa = *info
+			}
+		}
+		if !preset.Filter(c, id, aa) {
 			continue
 		}
-		out = append(out, uiModel{
+		m := uiModel{
 			ID:              id,
 			PromptPrice:     c.PromptPrice,
 			CompletionPrice: c.CompletionPrice,
@@ -198,38 +240,64 @@ func applyPreset(all map[string]llm.Capabilities, role string) []uiModel {
 			Reasoning:       c.Reasoning,
 			Free:            c.Free(),
 			Score:           c.Score,
-		})
+		}
+		enrichFromAA(&m, aa)
+		candidates = append(candidates, m)
 	}
-	switch preset.Sort {
-	case sortByCompletionPrice:
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].CompletionPrice != out[j].CompletionPrice {
-				return out[i].CompletionPrice < out[j].CompletionPrice
-			}
-			return out[i].ID < out[j].ID
-		})
-	case sortByScorePerDollar:
-		sort.Slice(out, func(i, j int) bool {
-			vi := scorePerDollar(out[i].Score, out[i].PromptPrice)
-			vj := scorePerDollar(out[j].Score, out[j].PromptPrice)
-			if vi != vj {
-				return vi > vj // higher value first
-			}
-			return out[i].ID < out[j].ID
-		})
-	default:
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].PromptPrice != out[j].PromptPrice {
-				return out[i].PromptPrice < out[j].PromptPrice
-			}
-			return out[i].ID < out[j].ID
-		})
+	axes := preset.Axes
+	if axes == nil && role == "classifier" {
+		axes = classifierAxes(candidates)
 	}
-	return out
+	frontier := paretoFrontier(candidates, axes)
+	sort.Slice(frontier, func(i, j int) bool {
+		qi, pi := axes(frontier[i])
+		qj, pj := axes(frontier[j])
+		if qi != qj {
+			return qi > qj
+		}
+		if pi != pj {
+			return pi < pj
+		}
+		return frontier[i].ID < frontier[j].ID
+	})
+	for i := range frontier {
+		q, p := axes(frontier[i])
+		if p > 0 && q > 0 {
+			frontier[i].ValuePerDollar = q / p
+		}
+	}
+	return frontier
+}
+
+// valueLeader returns the frontier model with the best quality/price ratio,
+// subject to role-quality ≥ qualityFloor × topQuality. Returns nil when the
+// value leader is already the top-quality model (no meaningful trade-off to
+// surface) or the frontier is trivially small.
+func valueLeader(frontier []uiModel, axes paretoAxes, qualityFloor float64) *uiModel {
+	if len(frontier) < 2 {
+		return nil
+	}
+	topQuality, _ := axes(frontier[0])
+	floor := qualityFloor * topQuality
+	bestIdx := -1
+	bestVal := 0.0
+	for i := range frontier {
+		q, p := axes(frontier[i])
+		if q < floor || p <= 0 {
+			continue
+		}
+		if v := q / p; v > bestVal {
+			bestVal = v
+			bestIdx = i
+		}
+	}
+	if bestIdx <= 0 { // not found, or it's frontier[0] itself
+		return nil
+	}
+	return &frontier[bestIdx]
 }
 
 // presetRoles returns the list of roles that have a preset, in display order.
-// Used by the UI to render "Suggest" buttons only for these roles.
 func presetRoles() map[string]bool {
 	out := make(map[string]bool, len(rolePresets))
 	for role := range rolePresets {

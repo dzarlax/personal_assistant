@@ -24,6 +24,12 @@
       <strong>Suggesting for role:</strong> <code>{{.Filters.ActivePreset}}</code>
       <span style="color:var(--text-secondary);margin-left:0.5rem;">— {{len .Models}} candidates</span>
       <div class="preset-meta">{{.Filters.PresetDescription}}</div>
+      {{if .Filters.ValueLeaderID}}
+      <div class="preset-meta" style="margin-top:0.25rem;">
+        <strong>Best value:</strong> <code>{{.Filters.ValueLeaderID}}</code>
+        <span style="color:var(--text-secondary);">— {{.Filters.ValueLeaderHint}}</span>
+      </div>
+      {{end}}
     </div>
     <button class="btn btn--ghost btn--small"
             hx-get="/models"
@@ -50,6 +56,9 @@
               hx-vals='{"sort":"completion","dir":"{{if and (eq $s "completion") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer">Completion{{if eq $s "completion"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"markup","dir":"{{if and (eq $s "markup") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer" title="OR price markup vs AA blended reference (3:1)">Markup{{if eq $s "markup"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"context","dir":"{{if and (eq $s "context") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer">Context{{if eq $s "context"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th>Caps</th>
@@ -68,6 +77,12 @@
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"ttft","dir":"{{if and (eq $s "ttft") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer" title="Median time to first token (sec)">TTFT{{if eq $s "ttft"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"think","dir":"{{if and (eq $s "think") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer" title="TTFA - TTFT: reasoner thinking time before answer">Think{{if eq $s "think"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"value","dir":"{{if and (eq $s "value") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="Quality per $ — role-specific on Suggest, agentic/$ otherwise">Value{{if eq $s "value"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>
       </thead>
       {{template "models_tbody" .}}

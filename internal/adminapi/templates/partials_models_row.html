@@ -19,6 +19,7 @@
     </td>
     <td class="price-cell">{{priceUSD .PromptPrice}}</td>
     <td class="price-cell">{{priceUSD .CompletionPrice}}</td>
+    <td class="price-cell" title="OR blended vs AA blended (3:1). + = OR charges more.">{{if ne .MarkupPct 0.0}}{{printf "%+.0f%%" .MarkupPct}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
     <td class="price-cell">{{ctxShort .ContextLength}}</td>
     <td class="caps-badges">
       {{if .Vision}}<span class="badge badge--success">V</span>{{end}}
@@ -31,9 +32,11 @@
     <td class="price-cell">{{if gt .AgenticIndex 0.0}}{{printf "%.1f" .AgenticIndex}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
     <td class="price-cell">{{if gt .SpeedTPS 0.0}}{{printf "%.0f" .SpeedTPS}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
     <td class="price-cell">{{if gt .TTFT 0.0}}{{printf "%.2f" .TTFT}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
+    <td class="price-cell" title="TTFA - TTFT — reasoner's thinking time before answer starts.">{{if gt .ThinkTime 0.0}}{{printf "%.1f" .ThinkTime}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
+    <td class="price-cell">{{if gt .ValuePerDollar 0.0}}{{printf "%.0f" .ValuePerDollar}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="10" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
+  <tr><td colspan="13" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
   {{end}}
 </tbody>
 {{end}}

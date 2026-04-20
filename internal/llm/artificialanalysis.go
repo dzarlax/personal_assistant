@@ -18,16 +18,18 @@ var aaHTTPClient = &http.Client{Timeout: 20 * time.Second}
 // AAModelInfo holds normalized AA data for a single model, keyed by the
 // OR-compatible slug (dots replaced with dashes in version segments).
 type AAModelInfo struct {
-	AASlug       string  `json:"aa_slug"`
-	CreatorSlug  string  `json:"creator_slug"`
-	Score        float64 `json:"score,omitempty"`        // Intelligence Index
-	CodingIndex  float64 `json:"coding_index,omitempty"`  // Coding Index
-	MathIndex    float64 `json:"math_index,omitempty"`    // Math Index
-	AgenticIndex float64 `json:"agentic_index,omitempty"` // Agentic Index
-	SpeedTPS     float64 `json:"speed_tps,omitempty"`     // median output tokens/sec
-	TTFT         float64 `json:"ttft_s,omitempty"`        // median time-to-first-token, seconds
-	PriceInput   float64 `json:"price_input_1m,omitempty"`
-	PriceOutput  float64 `json:"price_output_1m,omitempty"`
+	AASlug        string  `json:"aa_slug"`
+	CreatorSlug   string  `json:"creator_slug"`
+	Score         float64 `json:"score,omitempty"`           // Intelligence Index
+	CodingIndex   float64 `json:"coding_index,omitempty"`    // Coding Index
+	MathIndex     float64 `json:"math_index,omitempty"`      // Math Index
+	AgenticIndex  float64 `json:"agentic_index,omitempty"`   // Agentic Index
+	SpeedTPS      float64 `json:"speed_tps,omitempty"`       // median output tokens/sec
+	TTFT          float64 `json:"ttft_s,omitempty"`          // median time-to-first-token, seconds
+	TTFA          float64 `json:"ttfa_s,omitempty"`          // median time-to-first-answer-token, seconds
+	PriceInput    float64 `json:"price_input_1m,omitempty"`  // USD / 1M input tokens
+	PriceOutput   float64 `json:"price_output_1m,omitempty"` // USD / 1M output tokens
+	PriceBlended  float64 `json:"price_blended_1m,omitempty"` // AA's blended 3:1 input/output reference price
 }
 
 // AACache is the kv_settings blob stored under aaSettingsKey.
@@ -75,12 +77,15 @@ type aaModelsResponse struct {
 			IntelligenceIndex *float64 `json:"artificial_analysis_intelligence_index"`
 			CodingIndex       *float64 `json:"artificial_analysis_coding_index"`
 			MathIndex         *float64 `json:"artificial_analysis_math_index"`
+			AgenticIndex      *float64 `json:"artificial_analysis_agentic_index"`
 		} `json:"evaluations"`
-		MedianOutputTPS  float64 `json:"median_output_tokens_per_second"`
-		MedianTTFT       float64 `json:"median_time_to_first_token_seconds"`
-		Pricing          struct {
-			Input  float64 `json:"price_1m_input_tokens"`
-			Output float64 `json:"price_1m_output_tokens"`
+		MedianOutputTPS float64 `json:"median_output_tokens_per_second"`
+		MedianTTFT      float64 `json:"median_time_to_first_token_seconds"`
+		MedianTTFA      float64 `json:"median_time_to_first_answer_token"`
+		Pricing         struct {
+			Input   float64 `json:"price_1m_input_tokens"`
+			Output  float64 `json:"price_1m_output_tokens"`
+			Blended float64 `json:"price_1m_blended_3_to_1"`
 		} `json:"pricing"`
 	} `json:"data"`
 }
@@ -102,12 +107,14 @@ func parseAAData(body []byte) (map[string]AAModelInfo, error) {
 			continue
 		}
 		info := AAModelInfo{
-			AASlug:      m.Slug,
-			CreatorSlug: m.ModelCreator.Slug,
-			SpeedTPS:    m.MedianOutputTPS,
-			TTFT:        m.MedianTTFT,
-			PriceInput:  m.Pricing.Input,
-			PriceOutput: m.Pricing.Output,
+			AASlug:       m.Slug,
+			CreatorSlug:  m.ModelCreator.Slug,
+			SpeedTPS:     m.MedianOutputTPS,
+			TTFT:         m.MedianTTFT,
+			TTFA:         m.MedianTTFA,
+			PriceInput:   m.Pricing.Input,
+			PriceOutput:  m.Pricing.Output,
+			PriceBlended: m.Pricing.Blended,
 		}
 		if v := m.Evaluations.IntelligenceIndex; v != nil {
 			info.Score = *v
@@ -117,6 +124,9 @@ func parseAAData(body []byte) (map[string]AAModelInfo, error) {
 		}
 		if v := m.Evaluations.MathIndex; v != nil {
 			info.MathIndex = *v
+		}
+		if v := m.Evaluations.AgenticIndex; v != nil {
+			info.AgenticIndex = *v
 		}
 		out[normalizeAAKey(m.ModelCreator.Slug, m.Slug)] = info
 	}

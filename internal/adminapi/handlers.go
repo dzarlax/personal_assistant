@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -38,6 +39,10 @@ type uiModel struct {
 	AgenticIndex    float64 // AA Agentic Index
 	SpeedTPS        float64 // median output tokens/sec
 	TTFT            float64 // median time-to-first-token, seconds
+	ThinkTime       float64 // TTFA - TTFT — time spent thinking before answer starts (reasoners only)
+	AAPriceBlended  float64 // AA's reference blended 3:1 input/output price (USD / 1M)
+	MarkupPct       float64 // (OR blended - AA blended) / AA blended × 100 — positive means OR charges more
+	ValuePerDollar  float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
 }
 
 type uiRouting struct {
@@ -53,6 +58,8 @@ type uiFilters struct {
 	Reasoning         bool
 	ActivePreset      string // role name when a preset is applied; empty otherwise
 	PresetDescription string // human-readable summary for the banner
+	ValueLeaderID     string // model id of the knee-point value leader (preset path only)
+	ValueLeaderHint   string // e.g. "85% quality @ 30% price" (preset path only)
 	Sort              string // active sort column: "prompt", "completion", "score", "context", "id"
 	SortDir           string // "asc" or "desc"
 }
@@ -237,18 +244,37 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
 	// filters are ignored on this path: the preset is a complete override.
 	if p, ok := rolePresets[preset]; ok {
+		models := applyPreset(allCaps, aaModels, preset)
+		filters := uiFilters{
+			ActivePreset:      preset,
+			PresetDescription: p.Description,
+			Tools:             requiresTools(preset),
+			Vision:            preset == "multimodal",
+			Reasoning:         preset == "complex",
+		}
+		// Knee-point value leader: best quality/price among frontier models
+		// with quality ≥ 50% of top. Skipped when the top model is already
+		// the value leader.
+		axes := p.Axes
+		if axes == nil && preset == "classifier" {
+			axes = classifierAxes(models)
+		}
+		if axes != nil {
+			if vl := valueLeader(models, axes, 0.5); vl != nil {
+				topQ, topP := axes(models[0])
+				vQ, vP := axes(*vl)
+				if topQ > 0 && topP > 0 {
+					filters.ValueLeaderID = vl.ID
+					filters.ValueLeaderHint = fmt.Sprintf("%.0f%% quality @ %.0f%% price",
+						100*vQ/topQ, 100*vP/topP)
+				}
+			}
+		}
 		return indexData{
 			Routing: s.buildRouting(),
 			Slots:   s.openRouterSlots(),
-			Models:  applyPreset(allCaps, preset),
-			Filters: uiFilters{
-				ActivePreset:      preset,
-				PresetDescription: p.Description,
-				// reflect preset intent in the checkboxes so user can tell what's on
-				Tools:     requiresTools(preset),
-				Vision:    preset == "multimodal",
-				Reasoning: preset == "complex",
-			},
+			Models:  models,
+			Filters: filters,
 		}
 	}
 
@@ -309,10 +335,18 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		}
 		if aaModels != nil {
 			if info := llm.LookupAAInfo(id, aaModels); info != nil {
-				m.CodingIndex = info.CodingIndex
-				m.AgenticIndex = info.AgenticIndex
-				m.SpeedTPS = info.SpeedTPS
-				m.TTFT = info.TTFT
+				enrichFromAA(&m, *info)
+			}
+		}
+		// Generic value metric for browse path: agentic index per $1/M prompt
+		// tokens, falling back to intelligence index when agentic is absent.
+		if m.PromptPrice > 0 {
+			q := m.AgenticIndex
+			if q == 0 {
+				q = m.Score
+			}
+			if q > 0 {
+				m.ValuePerDollar = q / m.PromptPrice
 			}
 		}
 		models = append(models, m)
@@ -333,6 +367,12 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			less = models[i].SpeedTPS < models[j].SpeedTPS
 		case "ttft":
 			less = models[i].TTFT < models[j].TTFT
+		case "think":
+			less = models[i].ThinkTime < models[j].ThinkTime
+		case "markup":
+			less = models[i].MarkupPct < models[j].MarkupPct
+		case "value":
+			less = models[i].ValuePerDollar < models[j].ValuePerDollar
 		case "context":
 			less = models[i].ContextLength < models[j].ContextLength
 		case "id":
@@ -354,6 +394,30 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		Slots:   s.openRouterSlots(),
 		Models:  models,
 		Filters: f,
+	}
+}
+
+// orBlendedPrice mirrors AA's 3:1 input/output weighting so prices are
+// directly comparable across sources.
+func orBlendedPrice(promptPrice, completionPrice float64) float64 {
+	return (3*promptPrice + completionPrice) / 4
+}
+
+// enrichFromAA populates the AA-derived fields on a uiModel from the matched
+// AAModelInfo record. Used by both the preset path and the browse path so
+// they share one formula for Think time and Markup %.
+func enrichFromAA(m *uiModel, aa llm.AAModelInfo) {
+	m.CodingIndex = aa.CodingIndex
+	m.AgenticIndex = aa.AgenticIndex
+	m.SpeedTPS = aa.SpeedTPS
+	m.TTFT = aa.TTFT
+	if aa.TTFA > 0 && aa.TTFT > 0 && aa.TTFA >= aa.TTFT {
+		m.ThinkTime = aa.TTFA - aa.TTFT
+	}
+	m.AAPriceBlended = aa.PriceBlended
+	if aa.PriceBlended > 0 && m.PromptPrice > 0 {
+		orBlended := orBlendedPrice(m.PromptPrice, m.CompletionPrice)
+		m.MarkupPct = (orBlended - aa.PriceBlended) / aa.PriceBlended * 100
 	}
 }
 
