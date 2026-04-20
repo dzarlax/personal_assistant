@@ -21,8 +21,8 @@
         hx-target="#models-browser"
         hx-swap="outerHTML"
         hx-trigger="input delay:300ms, change">
-    <input class="form-input" type="search" name="q" placeholder="Search model id…"
-           value="{{.Filters.Search}}" style="flex:1;min-width:12rem;">
+    <input id="model-search" class="form-input" type="search" name="q" placeholder="Search model id…"
+           value="{{.Filters.Search}}" style="flex:1;min-width:12rem;" hx-preserve>
     <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>
     <label><input type="checkbox" name="vision"    {{if .Filters.Vision}}checked{{end}}> Vision</label>
     <label><input type="checkbox" name="tools"     {{if .Filters.Tools}}checked{{end}}> Tools</label>
