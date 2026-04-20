@@ -1,5 +1,23 @@
 {{define "models_browser"}}
 <div id="models-browser">
+  <form id="models-filters" class="filters"
+        hx-get="/models"
+        hx-target="#models-content"
+        hx-swap="outerHTML"
+        hx-trigger="input delay:300ms, change">
+    <input class="form-input" type="search" name="q" placeholder="Search model id…"
+           value="{{.Filters.Search}}" style="flex:1;min-width:12rem;">
+    <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>
+    <label><input type="checkbox" name="vision"    {{if .Filters.Vision}}checked{{end}}> Vision</label>
+    <label><input type="checkbox" name="tools"     {{if .Filters.Tools}}checked{{end}}> Tools</label>
+    <label><input type="checkbox" name="reasoning" {{if .Filters.Reasoning}}checked{{end}}> Reasoning</label>
+  </form>
+  {{template "models_content" .}}
+</div>
+{{end}}
+
+{{define "models_content"}}
+<div id="models-content">
   {{if .Filters.ActivePreset}}
   <div class="preset-banner">
     <div>
@@ -9,45 +27,33 @@
     </div>
     <button class="btn btn--ghost btn--small"
             hx-get="/models"
-            hx-target="#models-browser"
-            hx-swap="outerHTML">
+            hx-target="#models-content"
+            hx-swap="outerHTML"
+            hx-include="#models-filters">
       × Clear preset
     </button>
   </div>
   {{end}}
-
-  <form class="filters"
-        hx-get="/models"
-        hx-target="#models-browser"
-        hx-swap="outerHTML"
-        hx-trigger="input delay:300ms, change">
-    <input id="model-search" class="form-input" type="search" name="q" placeholder="Search model id…"
-           value="{{.Filters.Search}}" style="flex:1;min-width:12rem;" hx-preserve>
-    <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>
-    <label><input type="checkbox" name="vision"    {{if .Filters.Vision}}checked{{end}}> Vision</label>
-    <label><input type="checkbox" name="tools"     {{if .Filters.Tools}}checked{{end}}> Tools</label>
-    <label><input type="checkbox" name="reasoning" {{if .Filters.Reasoning}}checked{{end}}> Reasoning</label>
-  </form>
 
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
           {{- $s := .Filters.Sort}}{{- $d := .Filters.SortDir}}
-          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"id","dir":"{{if and (eq $s "id") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer">Model{{if eq $s "id"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
-          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"prompt","dir":"{{if and (eq $s "prompt") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer">Prompt{{if eq $s "prompt"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
-          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"completion","dir":"{{if and (eq $s "completion") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer">Completion{{if eq $s "completion"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
-          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"context","dir":"{{if and (eq $s "context") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer">Context{{if eq $s "context"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th>Caps</th>
-          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"score","dir":"{{if and (eq $s "score") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer" title="Artificial Analysis Intelligence Index">AA Score{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>

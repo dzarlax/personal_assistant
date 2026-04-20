@@ -72,10 +72,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	data := s.buildIndexData(r) // reuses model filtering + slots
+	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := render(w, viewModelsBrowser, data); err != nil {
-		s.logger.Error("render models_table", "err", err)
+	if err := render(w, viewModelsContent, data); err != nil {
+		s.logger.Error("render models_content", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
@@ -197,7 +197,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := render(w, viewModelsBrowser, data); err != nil {
+	if err := render(w, viewModelsContent, data); err != nil {
 		s.logger.Error("render models after refresh", "err", err)
 	}
 }

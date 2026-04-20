@@ -15,6 +15,7 @@ const (
 	viewIndex         = "index"
 	viewRouting       = "routing"
 	viewModelsBrowser = "models_browser"
+	viewModelsContent = "models_content"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -34,6 +35,7 @@ var tmpls = func() map[string]*template.Template {
 		viewIndex:         "templates/index.html",
 		viewRouting:       "templates/routing.html",
 		viewModelsBrowser: "templates/partials_models_browser.html",
+		viewModelsContent: "templates/partials_models_browser.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {
