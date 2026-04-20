@@ -33,13 +33,14 @@ var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_\-/:. ]+$`)
 
 // Client manages connections to multiple MCP servers.
 type Client struct {
-	servers         map[string]*server
-	tools          []Tool
-	toolServers    map[string]string // tool name → server name
-	logger         *slog.Logger
-	embeddingCfg   config.ModelConfig
-	topK           int
-	embeddingsReady bool
+	servers               map[string]*server
+	tools                 []Tool
+	toolServers           map[string]string // tool name → server name
+	logger                *slog.Logger
+	embeddingCfg          config.ModelConfig
+	topK                  int
+	embeddingsReady       bool
+	alwaysIncludeKeywords []string // lower-cased, trimmed substrings matched against tool.Name
 }
 
 type server struct {
@@ -133,6 +134,20 @@ func (c *Client) EnableEmbeddings(cfg config.ModelConfig, topK int) {
 	c.topK = topK
 }
 
+// SetAlwaysIncludeKeywords configures substrings that, if found (case-insensitive)
+// in a tool's name, force that tool to be included in LLMToolsForQuery results
+// regardless of its cosine score. Empty entries are dropped.
+func (c *Client) SetAlwaysIncludeKeywords(keywords []string) {
+	normalized := make([]string, 0, len(keywords))
+	for _, kw := range keywords {
+		kw = strings.TrimSpace(strings.ToLower(kw))
+		if kw != "" {
+			normalized = append(normalized, kw)
+		}
+	}
+	c.alwaysIncludeKeywords = normalized
+}
+
 // EmbedText computes an embedding for the given text using the configured embedding model.
 // Returns an error if embeddings are not configured.
 func (c *Client) EmbedText(ctx context.Context, text string) ([]float32, error) {
@@ -193,6 +208,7 @@ func (c *Client) LLMToolsForQuery(ctx context.Context, query string) []llm.Tool 
 	})
 
 	result := make([]llm.Tool, 0, c.topK)
+	included := make(map[string]struct{}, c.topK)
 	for i := 0; i < c.topK; i++ {
 		t := candidates[i].tool
 		result = append(result, llm.Tool{
@@ -200,9 +216,42 @@ func (c *Client) LLMToolsForQuery(ctx context.Context, query string) []llm.Tool 
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 		})
+		included[t.Name] = struct{}{}
 	}
-	c.logger.Debug("tool filter applied", "query_len", len(query), "selected", len(result), "total", len(c.tools))
+
+	alwaysAdded := 0
+	if len(c.alwaysIncludeKeywords) > 0 {
+		for _, t := range c.tools {
+			if _, ok := included[t.Name]; ok {
+				continue
+			}
+			if !matchesAnyKeyword(t.Name, c.alwaysIncludeKeywords) {
+				continue
+			}
+			result = append(result, llm.Tool{
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+			})
+			included[t.Name] = struct{}{}
+			alwaysAdded++
+		}
+	}
+
+	c.logger.Debug("tool filter applied", "query_len", len(query), "selected", len(result), "always_included", alwaysAdded, "total", len(c.tools))
 	return result
+}
+
+// matchesAnyKeyword reports whether name (lower-cased) contains any of the
+// provided keywords (which must already be lower-cased and non-empty).
+func matchesAnyKeyword(name string, keywords []string) bool {
+	lowered := strings.ToLower(name)
+	for _, kw := range keywords {
+		if strings.Contains(lowered, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // LLMTools returns tools in the format expected by the LLM provider.
