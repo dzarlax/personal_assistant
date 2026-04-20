@@ -39,10 +39,16 @@ func TestPresetInspection(t *testing.T) {
 	}
 	t.Logf("loaded %d AA models (fetched at %s)", len(cache.Models), cache.FetchedAt)
 
+	// Simulate the current multimodal slot's prompt price for effective-cost
+	// computation. In prod this is read from the router/cap store; for the
+	// inspection test we use qwen/qwen3.5-27b's price as a reasonable proxy
+	// (matches the fallback seen in earlier runs).
+	visionFallbackPrompt := 0.195
+
 	roles := []string{"simple", "default", "complex", "multimodal", "compaction", "classifier"}
 	for _, role := range roles {
 		preset := rolePresets[role]
-		results := applyPreset(caps, cache.Models, role)
+		results := applyPreset(caps, cache.Models, role, visionFallbackPrompt)
 
 		var lines []string
 		lines = append(lines, fmt.Sprintf("\n=== %s (%d candidates on Pareto frontier) ===", role, len(results)))
@@ -59,16 +65,23 @@ func TestPresetInspection(t *testing.T) {
 				vl.ID, 100*vQ/topQ, 100*vP/topP))
 		}
 
-		lines = append(lines, fmt.Sprintf("%-52s %8s %8s %6s %6s %6s %6s %6s %7s %8s", "model", "prompt$", "compl$", "ctx(k)", "agent", "TPS", "TTFT", "think", "markup", "value"))
+		lines = append(lines, fmt.Sprintf("%-52s %7s %7s %4s %6s %6s %6s %7s %8s", "model", "prompt$", "eff$", "V", "agent", "TTFT", "think", "markup", "value"))
 		for _, m := range results {
+			vis := " "
+			if m.Vision {
+				vis = "✓"
+			}
+			eff := m.PromptPrice
+			if m.EffectivePrompt > 0 {
+				eff = m.EffectivePrompt
+			}
 			lines = append(lines, fmt.Sprintf(
-				"%-52s %8.3f %8.3f %6d %6.1f %6.0f %6.2f %6.1f %+6.0f%% %8.0f",
+				"%-52s %7.3f %7.3f %4s %6.1f %6.2f %6.1f %+6.0f%% %8.0f",
 				trunc(m.ID, 52),
 				m.PromptPrice,
-				m.CompletionPrice,
-				m.ContextLength/1000,
+				eff,
+				vis,
 				m.AgenticIndex,
-				m.SpeedTPS,
 				m.TTFT,
 				m.ThinkTime,
 				m.MarkupPct,

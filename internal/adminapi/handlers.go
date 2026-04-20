@@ -42,6 +42,7 @@ type uiModel struct {
 	ThinkTime       float64 // TTFA - TTFT — time spent thinking before answer starts (reasoners only)
 	AAPriceBlended  float64 // AA's reference blended 3:1 input/output price (USD / 1M)
 	MarkupPct       float64 // (OR blended - AA blended) / AA blended × 100 — positive means OR charges more
+	EffectivePrompt float64 // 0.9 × prompt + 0.1 × multimodal_slot.prompt for non-vision candidates under roles that route images elsewhere
 	ValuePerDollar  float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
 }
 
@@ -244,7 +245,20 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
 	// filters are ignored on this path: the preset is a complete override.
 	if p, ok := rolePresets[preset]; ok {
-		models := applyPreset(allCaps, aaModels, preset)
+		// Find current multimodal slot's prompt price — passed to applyPreset
+		// so non-vision candidates for default/simple/complex get an effective
+		// price that accounts for image messages routing to multimodal.
+		var visionFallbackPrompt float64
+		cfg := s.router.GetConfig()
+		for _, sl := range s.openRouterSlots() {
+			if sl.Name == cfg.Multimodal {
+				if c, ok := allCaps[sl.ModelID]; ok {
+					visionFallbackPrompt = c.PromptPrice
+				}
+				break
+			}
+		}
+		models := applyPreset(allCaps, aaModels, preset, visionFallbackPrompt)
 		filters := uiFilters{
 			ActivePreset:      preset,
 			PresetDescription: p.Description,
@@ -371,6 +385,8 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			less = models[i].ThinkTime < models[j].ThinkTime
 		case "markup":
 			less = models[i].MarkupPct < models[j].MarkupPct
+		case "effective":
+			less = effectiveOrNominal(models[i]) < effectiveOrNominal(models[j])
 		case "value":
 			less = models[i].ValuePerDollar < models[j].ValuePerDollar
 		case "context":
@@ -401,6 +417,16 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 // directly comparable across sources.
 func orBlendedPrice(promptPrice, completionPrice float64) float64 {
 	return (3*promptPrice + completionPrice) / 4
+}
+
+// effectiveOrNominal returns EffectivePrompt when set, otherwise PromptPrice.
+// Used by the "effective" sort case so models without the adjustment still
+// rank by their nominal price.
+func effectiveOrNominal(m uiModel) float64 {
+	if m.EffectivePrompt > 0 {
+		return m.EffectivePrompt
+	}
+	return m.PromptPrice
 }
 
 // enrichFromAA populates the AA-derived fields on a uiModel from the matched

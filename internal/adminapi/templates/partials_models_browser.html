@@ -24,6 +24,10 @@
       <strong>Suggesting for role:</strong> <code>{{.Filters.ActivePreset}}</code>
       <span style="color:var(--text-secondary);margin-left:0.5rem;">— {{len .Models}} candidates</span>
       <div class="preset-meta">{{.Filters.PresetDescription}}</div>
+      <div class="preset-meta" style="color:var(--text-secondary);font-size:0.85em;margin-top:0.25rem;"
+           title="Pareto frontier: model kept iff no other has both higher quality AND lower price. Then sorted by quality desc.&#10;&#10;Best value (knee point): max(quality / price) among frontier models where quality ≥ 50% of top. Hidden when the top-quality model is already best value.&#10;&#10;Effective price for non-vision candidates under simple/default/complex: 0.9 × candidate.prompt + 0.1 × multimodal_slot.prompt — assumes 10% of messages contain images.">
+        ⓘ <em>How recommendations work</em>
+      </div>
       {{if .Filters.ValueLeaderID}}
       <div class="preset-meta" style="margin-top:0.25rem;">
         <strong>Best value:</strong> <code>{{.Filters.ValueLeaderID}}</code>
@@ -48,41 +52,44 @@
           {{- $s := .Filters.Sort}}{{- $d := .Filters.SortDir}}
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"id","dir":"{{if and (eq $s "id") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer">Model{{if eq $s "id"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="Model identifier on OpenRouter (provider/model)">Model{{if eq $s "id"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"prompt","dir":"{{if and (eq $s "prompt") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer">Prompt{{if eq $s "prompt"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="USD per 1M prompt (input) tokens on OpenRouter">Prompt{{if eq $s "prompt"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"completion","dir":"{{if and (eq $s "completion") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer">Completion{{if eq $s "completion"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="USD per 1M completion (output) tokens on OpenRouter">Completion{{if eq $s "completion"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"effective","dir":"{{if and (eq $s "effective") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer" title="Effective prompt price including vision fallback. For non-vision candidates under simple/default/complex: 0.9 × prompt + 0.1 × multimodal_slot.prompt. Equal to Prompt for vision-capable models.">Eff${{if eq $s "effective"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"markup","dir":"{{if and (eq $s "markup") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer" title="OR price markup vs AA blended reference (3:1)">Markup{{if eq $s "markup"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="(OR blended - AA blended) / AA blended × 100, where blended = (3 × prompt + completion) / 4. Negative = OR cheaper than AA reference (usually routes to a budget upstream). Positive = OR charges a margin.">Markup{{if eq $s "markup"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"context","dir":"{{if and (eq $s "context") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer">Context{{if eq $s "context"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
-          <th>Caps</th>
+              style="cursor:pointer" title="Maximum context window size (tokens)">Context{{if eq $s "context"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th title="Capabilities: V=Vision, T=Tools, R=Reasoning, FREE=no-cost tier">Caps</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"score","dir":"{{if and (eq $s "score") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="AA Intelligence Index">Intel{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="Artificial Analysis Intelligence Index — composite quality benchmark (0-100)">Intel{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"coding","dir":"{{if and (eq $s "coding") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="AA Coding Index">Code{{if eq $s "coding"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="AA Coding Index — performance on coding benchmarks (0-100)">Code{{if eq $s "coding"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"agentic","dir":"{{if and (eq $s "agentic") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="AA Agentic Index">Agent{{if eq $s "agentic"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="AA Agentic Index — tool-use performance in agentic loops (0-100). Primary quality metric for simple/default/complex recommendations.">Agent{{if eq $s "agentic"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"speed","dir":"{{if and (eq $s "speed") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="Median output tokens/sec">Speed{{if eq $s "speed"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="Median output tokens per second — throughput after first token">Speed{{if eq $s "speed"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"ttft","dir":"{{if and (eq $s "ttft") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer" title="Median time to first token (sec)">TTFT{{if eq $s "ttft"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="Median time to first token (seconds) — startup latency. Primary metric for classifier role when available.">TTFT{{if eq $s "ttft"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"think","dir":"{{if and (eq $s "think") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
-              style="cursor:pointer" title="TTFA - TTFT: reasoner thinking time before answer">Think{{if eq $s "think"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="TTFA - TTFT: seconds spent streaming thinking trace before the answer begins. 0 for non-reasoners.">Think{{if eq $s "think"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"value","dir":"{{if and (eq $s "value") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="Quality per $ — role-specific on Suggest, agentic/$ otherwise">Value{{if eq $s "value"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="Quality per $ (higher = more bang per buck). Role-specific in Suggest mode (uses role's Pareto axes); generic agentic/prompt in browse mode.">Value{{if eq $s "value"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>
       </thead>
       {{template "models_tbody" .}}

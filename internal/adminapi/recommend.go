@@ -51,6 +51,14 @@ type rolePreset struct {
 	Axes        paretoAxes
 }
 
+// imageShare is the assumed fraction of user messages that contain an image.
+// Used to inflate a non-vision candidate's effective prompt price: those
+// messages always route to the (more expensive) multimodal slot, so the
+// candidate's real cost for agentic/default traffic is:
+//
+//	(1 - imageShare) * candidate.prompt + imageShare * multimodal_slot.prompt
+const imageShare = 0.10
+
 // bestAgentic — use AA Agentic Index when available; fall back to Intelligence
 // Index for untested models (scaled down to de-rank vs. tested models).
 func bestAgentic(m uiModel) float64 {
@@ -58,6 +66,27 @@ func bestAgentic(m uiModel) float64 {
 		return m.AgenticIndex
 	}
 	return m.Score
+}
+
+// effectivePromptOf returns the cost-adjusted prompt price. If the model is
+// non-vision AND applyPreset populated EffectivePrompt (by passing a
+// visionFallbackPrompt in the relevant role), use that. Otherwise nominal.
+func effectivePromptOf(m uiModel) float64 {
+	if m.EffectivePrompt > 0 {
+		return m.EffectivePrompt
+	}
+	return m.PromptPrice
+}
+
+// usesVisionFallback returns true for roles where non-vision traffic routes
+// image messages to the multimodal slot (so the role's candidates should be
+// penalised for missing vision).
+func usesVisionFallback(role string) bool {
+	switch role {
+	case "simple", "default", "complex":
+		return true
+	}
+	return false
 }
 
 // inverseTTFT — classifier emits one digit; TTFT (time-to-first-token)
@@ -83,7 +112,7 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 0.2
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
 	},
 
 	"default": {
@@ -98,7 +127,7 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
 	},
 
 	"complex": {
@@ -114,7 +143,7 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 64000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 5.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), m.PromptPrice },
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
 	},
 
 	"multimodal": {
@@ -214,11 +243,17 @@ func paretoFrontier(models []uiModel, axes paretoAxes) []uiModel {
 // applyPreset returns the Pareto-optimal models for the role, sorted by
 // quality descending (best first). If the role has no preset, returns nil.
 // Each returned model has ValuePerDollar populated using the role's axes.
-func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAModelInfo, role string) []uiModel {
+//
+// visionFallbackPrompt is the current prompt price of the multimodal slot's
+// model. Non-vision candidates for roles in usesVisionFallback have their
+// EffectivePrompt set to a blended cost that accounts for image messages
+// bouncing to multimodal. Pass 0 to disable this adjustment.
+func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAModelInfo, role string, visionFallbackPrompt float64) []uiModel {
 	preset, ok := rolePresets[role]
 	if !ok {
 		return nil
 	}
+	applyEffective := usesVisionFallback(role) && visionFallbackPrompt > 0
 	candidates := make([]uiModel, 0, len(all))
 	for id, c := range all {
 		var aa llm.AAModelInfo
@@ -242,6 +277,9 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 			Score:           c.Score,
 		}
 		enrichFromAA(&m, aa)
+		if applyEffective && !c.Vision {
+			m.EffectivePrompt = (1-imageShare)*c.PromptPrice + imageShare*visionFallbackPrompt
+		}
 		candidates = append(candidates, m)
 	}
 	axes := preset.Axes
