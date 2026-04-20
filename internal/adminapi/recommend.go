@@ -57,6 +57,7 @@ type sortStrategy int
 const (
 	sortByPromptPrice sortStrategy = iota
 	sortByCompletionPrice
+	sortByScorePerDollar // AA Intelligence Index / prompt price (higher = better value)
 )
 
 // rolePreset describes how to filter + order the OpenRouter catalog for a
@@ -74,7 +75,7 @@ type rolePreset struct {
 // available (all filters off).
 var rolePresets = map[string]rolePreset{
 	"simple": {
-		Description: "tools + multilingual, ≤ $1/M prompt, no coder/vl/free variants",
+		Description: "tools + multilingual, ≤ $1/M prompt, no coder/vl/free variants — sorted by AA score/price",
 		Filter: func(c llm.Capabilities, id string) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -84,11 +85,11 @@ var rolePresets = map[string]rolePreset{
 				c.Tools &&
 				c.PromptPrice > 0 && c.PromptPrice <= 1.0
 		},
-		Sort: sortByPromptPrice,
+		Sort: sortByScorePerDollar,
 	},
 
 	"default": {
-		Description: "tools + multilingual, ≤ $2/M prompt, no coder/vl/free variants",
+		Description: "tools + multilingual, ≤ $2/M prompt, no coder/vl/free variants — sorted by AA score/price",
 		Filter: func(c llm.Capabilities, id string) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -98,7 +99,7 @@ var rolePresets = map[string]rolePreset{
 				c.Tools &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Sort: sortByPromptPrice,
+		Sort: sortByScorePerDollar,
 	},
 
 	"complex": {
@@ -164,6 +165,16 @@ func isFreeVariant(modelID string) bool {
 	return len(modelID) > 5 && modelID[len(modelID)-5:] == ":free"
 }
 
+// scorePerDollar returns AA Intelligence Index per USD/1M prompt tokens.
+// Models without a score fall back to sorting by price only (score=0 → value=0,
+// so they appear after scored models).
+func scorePerDollar(score, promptPrice float64) float64 {
+	if score == 0 || promptPrice == 0 {
+		return 0
+	}
+	return score / promptPrice
+}
+
 // applyPreset returns the models matching the preset for role, sorted per
 // the preset's strategy. If the role has no preset, returns nil (caller
 // should fall back to the full catalog).
@@ -186,6 +197,7 @@ func applyPreset(all map[string]llm.Capabilities, role string) []uiModel {
 			Tools:           c.Tools,
 			Reasoning:       c.Reasoning,
 			Free:            c.Free(),
+			Score:           c.Score,
 		})
 	}
 	switch preset.Sort {
@@ -193,6 +205,15 @@ func applyPreset(all map[string]llm.Capabilities, role string) []uiModel {
 		sort.Slice(out, func(i, j int) bool {
 			if out[i].CompletionPrice != out[j].CompletionPrice {
 				return out[i].CompletionPrice < out[j].CompletionPrice
+			}
+			return out[i].ID < out[j].ID
+		})
+	case sortByScorePerDollar:
+		sort.Slice(out, func(i, j int) bool {
+			vi := scorePerDollar(out[i].Score, out[i].PromptPrice)
+			vj := scorePerDollar(out[j].Score, out[j].PromptPrice)
+			if vi != vj {
+				return vi > vj // higher value first
 			}
 			return out[i].ID < out[j].ID
 		})

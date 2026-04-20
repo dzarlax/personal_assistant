@@ -26,9 +26,10 @@
       {{if .Reasoning}}<span class="badge badge--warning">R</span>{{end}}
       {{if .Free}}<span class="badge badge--success">FREE</span>{{end}}
     </td>
+    <td class="price-cell">{{if gt .Score 0.0}}{{printf "%.1f" .Score}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
+  <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
   {{end}}
 </tbody>
 {{end}}

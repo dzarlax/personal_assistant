@@ -33,6 +33,7 @@ type uiModel struct {
 	Tools           bool
 	Reasoning       bool
 	Free            bool
+	Score           float64 // Artificial Analysis Intelligence Index (0 = unknown)
 }
 
 type uiRouting struct {
@@ -48,6 +49,8 @@ type uiFilters struct {
 	Reasoning         bool
 	ActivePreset      string // role name when a preset is applied; empty otherwise
 	PresetDescription string // human-readable summary for the banner
+	Sort              string // active sort column: "prompt", "completion", "score", "context", "id"
+	SortDir           string // "asc" or "desc"
 }
 
 type indexData struct {
@@ -154,7 +157,7 @@ func (s *Server) handleRoleSet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRefresh triggers a fresh OpenRouter /models fetch and re-caches caps.
+// handleRefresh triggers a fresh OpenRouter /models fetch (+ AA scores if configured) and re-caches caps.
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -167,12 +170,24 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+
 	caps, err := llm.FetchOpenRouterModels(ctx, apiKey)
 	if err != nil {
 		s.logger.Warn("refresh failed", "err", err)
 		http.Error(w, "upstream fetch failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	// Overlay AA Intelligence Index scores if configured.
+	if aaKey := s.cfgRef.ArtificialAnalysisAPIKey; aaKey != "" {
+		if scores, aaErr := llm.FetchArtificialAnalysisScores(ctx, aaKey); aaErr != nil {
+			s.logger.Warn("AA scores refresh failed", "err", aaErr)
+		} else {
+			llm.MergeAAScores(caps, scores)
+			s.logger.Info("AA scores refreshed", "count", len(scores))
+		}
+	}
+
 	if s.capStore != nil {
 		for id, c := range caps {
 			_ = s.capStore.PutCapabilities(ctx, "openrouter", id, c)
@@ -180,7 +195,6 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("openrouter catalog refreshed", "count", len(caps))
 
-	// Re-render just the tbody.
 	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := render(w, viewModelsBrowser, data); err != nil {
@@ -223,12 +237,26 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	// query string), since the agentic loop requires tool calling. Once the
 	// user submits the filters form, whatever they send wins.
 	formSubmitted := len(q) > 0
+	sortCol := q.Get("sort")
+	if sortCol == "" {
+		sortCol = "prompt"
+	}
+	sortDir := q.Get("dir")
+	if sortDir != "asc" && sortDir != "desc" {
+		if sortCol == "score" || sortCol == "context" {
+			sortDir = "desc"
+		} else {
+			sortDir = "asc"
+		}
+	}
 	f := uiFilters{
 		Search:    strings.ToLower(strings.TrimSpace(q.Get("q"))),
 		Free:      q.Get("free") != "",
 		Vision:    q.Get("vision") != "",
 		Tools:     q.Get("tools") != "" || !formSubmitted,
 		Reasoning: q.Get("reasoning") != "",
+		Sort:      sortCol,
+		SortDir:   sortDir,
 	}
 
 	models := make([]uiModel, 0, len(allCaps))
@@ -258,17 +286,31 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			Tools:           c.Tools,
 			Reasoning:       c.Reasoning,
 			Free:            free,
+			Score:           c.Score,
 		})
 	}
-	// Stable ordering: free first, then by prompt price ascending.
+	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
-		if models[i].Free != models[j].Free {
-			return models[i].Free
+		var less bool
+		switch sortCol {
+		case "completion":
+			less = models[i].CompletionPrice < models[j].CompletionPrice
+		case "score":
+			less = models[i].Score < models[j].Score
+		case "context":
+			less = models[i].ContextLength < models[j].ContextLength
+		case "id":
+			less = models[i].ID < models[j].ID
+		default: // "prompt"
+			if models[i].Free != models[j].Free {
+				return models[i].Free // free always first regardless of direction
+			}
+			less = models[i].PromptPrice < models[j].PromptPrice
 		}
-		if models[i].PromptPrice != models[j].PromptPrice {
-			return models[i].PromptPrice < models[j].PromptPrice
+		if asc {
+			return less
 		}
-		return models[i].ID < models[j].ID
+		return !less
 	})
 
 	return indexData{

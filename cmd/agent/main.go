@@ -185,6 +185,8 @@ func main() {
 	// CapabilityStore, then apply caps to each OR-backed provider so the router
 	// can make vision/tool-aware decisions.
 	hydrateOpenRouterCapabilities(cfg, providers, s, logger)
+	// Overlay Artificial Analysis Intelligence Index scores onto cached caps.
+	hydrateArtificialAnalysisScores(cfg, s, logger)
 
 	// Persist routing overrides across restarts via the DB settings store.
 	// The legacy file path is kept only for one-time migration on first start.
@@ -423,4 +425,48 @@ func hydrateOpenRouterCapabilities(cfg *config.Config, providers map[string]llm.
 			cp.SetModel(cur, c)
 		}
 	}
+}
+
+// hydrateArtificialAnalysisScores fetches Intelligence Index scores from
+// Artificial Analysis and merges them into the CapabilityStore. Requires
+// AA_API_KEY in config or environment. Silently skips when not configured.
+func hydrateArtificialAnalysisScores(cfg *config.Config, s store.Store, logger *slog.Logger) {
+	apiKey := cfg.ArtificialAnalysisAPIKey
+	if apiKey == "" {
+		return
+	}
+
+	capStore, ok := s.(llm.CapabilityStore)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	scores, err := llm.FetchArtificialAnalysisScores(ctx, apiKey)
+	if err != nil {
+		logger.Warn("artificialanalysis scores fetch failed", "err", err)
+		return
+	}
+
+	// Load cached caps, overlay scores, write back.
+	caps, err := capStore.GetAllCapabilities(ctx, "openrouter")
+	if err != nil {
+		logger.Warn("failed to load cached capabilities for AA merge", "err", err)
+		return
+	}
+	llm.MergeAAScores(caps, scores)
+	updated := 0
+	for id, c := range caps {
+		if c.Score == 0 {
+			continue
+		}
+		if putErr := capStore.PutCapabilities(ctx, "openrouter", id, c); putErr != nil {
+			logger.Warn("AA score put failed", "model", id, "err", putErr)
+		} else {
+			updated++
+		}
+	}
+	logger.Info("artificialanalysis scores merged", "total", len(scores), "updated", updated)
 }

@@ -21,6 +21,7 @@ type Capabilities struct {
 	PromptPrice     float64 // USD per 1M prompt tokens (0 = free or unknown)
 	CompletionPrice float64 // USD per 1M completion tokens
 	ContextLength   int     // max context in tokens
+	Score           float64 // Artificial Analysis Intelligence Index (0 = unknown)
 }
 
 // Free reports whether the model can be used without usage cost.

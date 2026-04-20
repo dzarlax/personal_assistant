@@ -33,11 +33,23 @@
     <table>
       <thead>
         <tr>
-          <th>Model</th>
-          <th>Prompt</th>
-          <th>Completion</th>
-          <th>Context</th>
+          {{- $s := .Filters.Sort}}{{- $d := .Filters.SortDir}}
+          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+              hx-vals='{"sort":"id","dir":"{{if and (eq $s "id") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer">Model{{if eq $s "id"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+              hx-vals='{"sort":"prompt","dir":"{{if and (eq $s "prompt") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer">Prompt{{if eq $s "prompt"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+              hx-vals='{"sort":"completion","dir":"{{if and (eq $s "completion") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer">Completion{{if eq $s "completion"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+              hx-vals='{"sort":"context","dir":"{{if and (eq $s "context") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer">Context{{if eq $s "context"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th>Caps</th>
+          <th hx-get="/models" hx-target="#models-browser" hx-swap="outerHTML" hx-include="closest form"
+              hx-vals='{"sort":"score","dir":"{{if and (eq $s "score") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="Artificial Analysis Intelligence Index">AA Score{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>
       </thead>
       {{template "models_tbody" .}}

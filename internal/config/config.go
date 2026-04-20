@@ -23,16 +23,17 @@ func expandEnvWithDefaults(s string) string {
 }
 
 type Config struct {
-	Telegram   TelegramConfig   `yaml:"telegram"`
-	Models     ModelsConfig     `yaml:"models"`
-	Routing    RoutingConfig    `yaml:"routing"`
-	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
-	WebSearch  WebSearchConfig  `yaml:"web_search"`
-	WebFetch   WebFetchConfig   `yaml:"web_fetch"`
-	Filesystem FilesystemConfig `yaml:"filesystem"`
-	TTS        TTSConfig        `yaml:"tts"`
-	VoiceAPI   VoiceAPIConfig   `yaml:"voice_api"`
-	AdminAPI   AdminAPIConfig   `yaml:"admin_api"`
+	Telegram                  TelegramConfig   `yaml:"telegram"`
+	Models                    ModelsConfig     `yaml:"models"`
+	Routing                   RoutingConfig    `yaml:"routing"`
+	ToolFilter                ToolFilterConfig `yaml:"tool_filter"`
+	WebSearch                 WebSearchConfig  `yaml:"web_search"`
+	WebFetch                  WebFetchConfig   `yaml:"web_fetch"`
+	Filesystem                FilesystemConfig `yaml:"filesystem"`
+	TTS                       TTSConfig        `yaml:"tts"`
+	VoiceAPI                  VoiceAPIConfig   `yaml:"voice_api"`
+	AdminAPI                  AdminAPIConfig   `yaml:"admin_api"`
+	ArtificialAnalysisAPIKey  string           `yaml:"artificial_analysis_api_key"`
 }
 
 type WebSearchConfig struct {
