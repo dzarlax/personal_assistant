@@ -65,9 +65,11 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			prompt_price     DOUBLE PRECISION NOT NULL DEFAULT 0,
 			completion_price DOUBLE PRECISION NOT NULL DEFAULT 0,
 			context_length   INTEGER     NOT NULL DEFAULT 0,
+			score            DOUBLE PRECISION NOT NULL DEFAULT 0,
 			fetched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (provider, model_id)
 		)`,
+		`ALTER TABLE model_capabilities ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS kv_settings (
 			key        TEXT PRIMARY KEY,
 			value      TEXT NOT NULL,
@@ -112,10 +114,10 @@ func (p *Postgres) PutSetting(ctx context.Context, key, value string) error {
 func (p *Postgres) GetCapabilities(ctx context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
 	var c llm.Capabilities
 	err := p.pool.QueryRow(ctx, `
-		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length
+		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = $1 AND model_id = $2`,
 		provider, modelID).Scan(&c.Vision, &c.Tools, &c.Reasoning,
-		&c.PromptPrice, &c.CompletionPrice, &c.ContextLength)
+		&c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score)
 	if err == pgx.ErrNoRows {
 		return llm.Capabilities{}, false, nil
 	}
@@ -128,8 +130,8 @@ func (p *Postgres) GetCapabilities(ctx context.Context, provider, modelID string
 func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string, c llm.Capabilities) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO model_capabilities
-			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, fetched_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score, fetched_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 		ON CONFLICT (provider, model_id) DO UPDATE SET
 			vision           = EXCLUDED.vision,
 			tools            = EXCLUDED.tools,
@@ -137,9 +139,10 @@ func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string
 			prompt_price     = EXCLUDED.prompt_price,
 			completion_price = EXCLUDED.completion_price,
 			context_length   = EXCLUDED.context_length,
+			score            = EXCLUDED.score,
 			fetched_at       = NOW()`,
 		provider, modelID, c.Vision, c.Tools, c.Reasoning,
-		c.PromptPrice, c.CompletionPrice, c.ContextLength)
+		c.PromptPrice, c.CompletionPrice, c.ContextLength, c.Score)
 	if err != nil {
 		return fmt.Errorf("put capabilities: %w", err)
 	}
@@ -148,7 +151,7 @@ func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string
 
 func (p *Postgres) GetAllCapabilities(ctx context.Context, provider string) (map[string]llm.Capabilities, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length
+		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = $1`, provider)
 	if err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
@@ -159,7 +162,7 @@ func (p *Postgres) GetAllCapabilities(ctx context.Context, provider string) (map
 		var id string
 		var c llm.Capabilities
 		if err := rows.Scan(&id, &c.Vision, &c.Tools, &c.Reasoning,
-			&c.PromptPrice, &c.CompletionPrice, &c.ContextLength); err != nil {
+			&c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score); err != nil {
 			return nil, err
 		}
 		out[id] = c

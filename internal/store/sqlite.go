@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS model_capabilities (
     prompt_price     REAL    NOT NULL DEFAULT 0,
     completion_price REAL    NOT NULL DEFAULT 0,
     context_length   INTEGER NOT NULL DEFAULT 0,
+    score            REAL    NOT NULL DEFAULT 0,
     fetched_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (provider, model_id)
 );
@@ -72,8 +73,9 @@ func NewSQLite(path string) (*SQLite, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 	// Migrations for existing databases
-	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)     //nolint:errcheck
-	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`) //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                              //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                          //nolint:errcheck
+	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`) //nolint:errcheck
 	return &SQLite{db: db}, nil
 }
 
@@ -581,12 +583,12 @@ func cosineSimilarityF32(a, b []float32) float64 {
 // GetCapabilities returns cached capabilities for (provider, modelID) or (_, false, nil) when absent.
 func (s *SQLite) GetCapabilities(ctx context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length
+		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = ? AND model_id = ?`,
 		provider, modelID)
 	var c llm.Capabilities
 	var vision, tools, reasoning int
-	err := row.Scan(&vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength)
+	err := row.Scan(&vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score)
 	if err == sql.ErrNoRows {
 		return llm.Capabilities{}, false, nil
 	}
@@ -603,8 +605,8 @@ func (s *SQLite) GetCapabilities(ctx context.Context, provider, modelID string) 
 func (s *SQLite) PutCapabilities(ctx context.Context, provider, modelID string, c llm.Capabilities) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_capabilities
-			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(provider, model_id) DO UPDATE SET
 			vision = excluded.vision,
 			tools = excluded.tools,
@@ -612,9 +614,10 @@ func (s *SQLite) PutCapabilities(ctx context.Context, provider, modelID string, 
 			prompt_price = excluded.prompt_price,
 			completion_price = excluded.completion_price,
 			context_length = excluded.context_length,
+			score = excluded.score,
 			fetched_at = CURRENT_TIMESTAMP`,
 		provider, modelID, boolToInt(c.Vision), boolToInt(c.Tools), boolToInt(c.Reasoning),
-		c.PromptPrice, c.CompletionPrice, c.ContextLength)
+		c.PromptPrice, c.CompletionPrice, c.ContextLength, c.Score)
 	if err != nil {
 		return fmt.Errorf("put capabilities: %w", err)
 	}
@@ -624,7 +627,7 @@ func (s *SQLite) PutCapabilities(ctx context.Context, provider, modelID string, 
 // GetAllCapabilities returns all known capabilities for the given provider.
 func (s *SQLite) GetAllCapabilities(ctx context.Context, provider string) (map[string]llm.Capabilities, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length
+		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = ?`, provider)
 	if err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
@@ -635,7 +638,7 @@ func (s *SQLite) GetAllCapabilities(ctx context.Context, provider string) (map[s
 		var id string
 		var c llm.Capabilities
 		var vision, tools, reasoning int
-		if err := rows.Scan(&id, &vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength); err != nil {
+		if err := rows.Scan(&id, &vision, &tools, &reasoning, &c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score); err != nil {
 			return nil, err
 		}
 		c.Vision = vision == 1
