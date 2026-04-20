@@ -118,6 +118,7 @@ func (a *Agent) TTSEnabled() bool {
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
 	tr := newRequestTrace()
+	turnStart := time.Now()
 	queryText := messageText(userMsg)
 
 	// Store user message; embed it if semantic store + MCP embeddings are both available.
@@ -204,6 +205,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			// Link the last usage_log row to this assistant message so analytics
 			// can pair cost/tokens with the actual reply the user saw.
 			a.backfillAssistantMsgID(ctx, lastUsageID, asstID)
+			a.backfillTurnLatency(lastUsageID, time.Since(turnStart))
 			// Cache only pure direct responses (first iteration, no tool calls).
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, resp.Content)
@@ -231,6 +233,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 // Tool-calling iterations remain synchronous. onChunk receives the accumulated text so far.
 func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string), onChunk func(accumulated string)) (string, error) {
 	tr := newRequestTrace()
+	turnStart := time.Now()
 	queryText := messageText(userMsg)
 
 	endEmbed := tr.begin("embed")
@@ -343,6 +346,7 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 		if len(toolCalls) == 0 {
 			asstID := a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
 			a.backfillAssistantMsgID(ctx, lastUsageID, asstID)
+			a.backfillTurnLatency(lastUsageID, time.Since(turnStart))
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, accumulated)
 			}
@@ -381,6 +385,13 @@ func (a *Agent) executeToolCalls(ctx context.Context, chatID int64, toolCalls []
 	results := make([]toolResult, len(toolCalls))
 	var wg sync.WaitGroup
 
+	meta, _ := llm.TurnMetaFrom(ctx)
+	var userMsgID *int64
+	if meta.UserMessageID != 0 {
+		id := meta.UserMessageID
+		userMsgID = &id
+	}
+
 	for i, tc := range toolCalls {
 		if onToolCall != nil {
 			onToolCall(tc.Name)
@@ -390,8 +401,12 @@ func (a *Agent) executeToolCalls(ctx context.Context, chatID int64, toolCalls []
 		wg.Add(1)
 		go func(idx int, tc llm.ToolCall) {
 			defer wg.Done()
+			toolStart := time.Now()
 			result, err := a.callTool(ctx, tc.Name, tc.Arguments)
+			elapsed := time.Since(toolStart)
+			errText := ""
 			if err != nil {
+				errText = err.Error()
 				a.logger.Warn("tool call failed", "tool", tc.Name, "err", err)
 				result = fmt.Sprintf("Error: %s", err.Error())
 			}
@@ -401,7 +416,19 @@ func (a *Agent) executeToolCalls(ctx context.Context, chatID int64, toolCalls []
 					result = summarized
 				}
 			}
-			a.logger.Info("tool result", "tool", tc.Name, "result_len", len(result))
+			a.logger.Info("tool result", "tool", tc.Name, "latency_ms", elapsed.Milliseconds(), "result_len", len(result))
+			if tcs, ok := a.store.(llm.ToolCallStore); ok {
+				writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = tcs.PutToolCall(writeCtx, llm.ToolCallLog{
+					ChatID:    meta.ChatID,
+					UserMsgID: userMsgID,
+					ToolName:  tc.Name,
+					LatencyMs: int(elapsed.Milliseconds()),
+					Success:   err == nil,
+					ErrorText: errText,
+				})
+				cancel()
+			}
 			results[idx] = toolResult{tc: tc, result: result}
 		}(i, tc)
 	}
@@ -578,6 +605,23 @@ func (a *Agent) backfillAssistantMsgID(ctx context.Context, usageID, asstID int6
 		a.logger.Warn("backfill assistant_message_id failed", "err", err)
 	}
 	_ = ctx
+}
+
+// backfillTurnLatency records the end-to-end turn duration on the final usage_log row.
+// Best-effort: no-ops silently when the store doesn't support it or usageID is 0.
+func (a *Agent) backfillTurnLatency(usageID int64, elapsed time.Duration) {
+	if usageID == 0 {
+		return
+	}
+	us, ok := a.store.(llm.UsageStore)
+	if !ok {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := us.UpdateTurnLatencyMs(writeCtx, usageID, int(elapsed.Milliseconds())); err != nil {
+		a.logger.Warn("backfill turn_latency_ms failed", "err", err)
+	}
 }
 
 // storeUserMessage saves the user message. If the store and MCP client both support

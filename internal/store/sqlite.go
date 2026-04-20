@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
     reasoning_tokens     INTEGER NOT NULL DEFAULT 0,
     cost_usd             REAL    NOT NULL DEFAULT 0,
     latency_ms           INTEGER NOT NULL DEFAULT 0,
+    turn_latency_ms      INTEGER NOT NULL DEFAULT 0,
     success              INTEGER NOT NULL DEFAULT 1,
     error_class          TEXT    NOT NULL DEFAULT '',
     request_id           TEXT    NOT NULL DEFAULT '',
@@ -76,6 +77,18 @@ CREATE TABLE IF NOT EXISTS usage_log (
 CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model_id);
 CREATE INDEX IF NOT EXISTS idx_usage_chat_ts  ON usage_log(chat_id, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_user_msg ON usage_log(user_message_id);
+
+CREATE TABLE IF NOT EXISTS tool_call_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    chat_id      INTEGER NOT NULL DEFAULT 0,
+    user_msg_id  INTEGER,
+    tool_name    TEXT    NOT NULL,
+    latency_ms   INTEGER NOT NULL DEFAULT 0,
+    success      INTEGER NOT NULL DEFAULT 1,
+    error_text   TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_tool_call_chat_ts ON tool_call_log(chat_id, ts);
 `
 
 const (
@@ -97,10 +110,11 @@ func NewSQLite(path string) (*SQLite, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 	// Migrations for existing databases
-	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                              //nolint:errcheck
-	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                          //nolint:errcheck
-	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`) //nolint:errcheck
-	db.Exec(`ALTER TABLE usage_log ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`)       //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                                        //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                                    //nolint:errcheck
+	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`)           //nolint:errcheck
+	db.Exec(`ALTER TABLE usage_log ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`)                 //nolint:errcheck
+	db.Exec(`ALTER TABLE usage_log ADD COLUMN turn_latency_ms INTEGER NOT NULL DEFAULT 0`)       //nolint:errcheck
 	return &SQLite{db: db}, nil
 }
 
@@ -720,12 +734,12 @@ func (s *SQLite) PutUsage(ctx context.Context, u llm.UsageLog) (int64, error) {
 		INSERT INTO usage_log (
 			provider, model_id, role, chat_id,
 			prompt_tokens, completion_tokens, cached_prompt_tokens, reasoning_tokens,
-			cost_usd, latency_ms, success, error_class, request_id, tool_call_count,
+			cost_usd, latency_ms, turn_latency_ms, success, error_class, request_id, tool_call_count,
 			user_message_id, assistant_message_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.Provider, u.ModelID, u.Role, u.ChatID,
 		u.PromptTokens, u.CompletionTokens, u.CachedPromptTokens, u.ReasoningTokens,
-		u.Cost, u.LatencyMs, boolToInt(u.Success), u.ErrorClass, u.RequestID, u.ToolCallCount,
+		u.Cost, u.LatencyMs, u.TurnLatencyMs, boolToInt(u.Success), u.ErrorClass, u.RequestID, u.ToolCallCount,
 		nullableInt64(u.UserMessageID), nullableInt64(u.AssistantMessageID))
 	if err != nil {
 		return 0, fmt.Errorf("put usage: %w", err)
@@ -738,6 +752,26 @@ func (s *SQLite) UpdateAssistantMessageID(ctx context.Context, usageID, msgID in
 		`UPDATE usage_log SET assistant_message_id = ? WHERE id = ?`, msgID, usageID)
 	if err != nil {
 		return fmt.Errorf("update usage assistant_message_id: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLite) UpdateTurnLatencyMs(ctx context.Context, usageID int64, ms int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE usage_log SET turn_latency_ms = ? WHERE id = ?`, ms, usageID)
+	if err != nil {
+		return fmt.Errorf("update usage turn_latency_ms: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLite) PutToolCall(ctx context.Context, t llm.ToolCallLog) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tool_call_log (chat_id, user_msg_id, tool_name, latency_ms, success, error_text)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		t.ChatID, nullableInt64(t.UserMsgID), t.ToolName, t.LatencyMs, boolToInt(t.Success), t.ErrorText)
+	if err != nil {
+		return fmt.Errorf("put tool call: %w", err)
 	}
 	return nil
 }

@@ -23,6 +23,7 @@ type UsageLog struct {
 	ReasoningTokens    int // for thinking-enabled models: tokens spent on internal reasoning (billed as completion but semantically distinct)
 	Cost               float64 // USD, authoritative per-request cost reported by the provider (OpenRouter's usage.cost). 0 when the provider doesn't surface this.
 	LatencyMs          int
+	TurnLatencyMs      int    // end-to-end turn time (user msg → final reply); only set on the last call of the turn
 	Success            bool
 	ErrorClass         string // "" / "rate_limit" / "5xx" / "network" / "timeout" / "other"
 	RequestID          string // provider's request id (e.g. OpenRouter gen-xxxxx) — useful for cross-referencing with provider dashboards
@@ -31,11 +32,29 @@ type UsageLog struct {
 	AssistantMessageID *int64 // FK to messages.id; NULL except on the final successful call of a turn
 }
 
+// ToolCallLog is a single MCP/built-in tool invocation record.
+type ToolCallLog struct {
+	ID        int64
+	Ts        time.Time
+	ChatID    int64
+	UserMsgID *int64 // FK to messages.id; matches the turn's user message
+	ToolName  string
+	LatencyMs int
+	Success   bool
+	ErrorText string
+}
+
+// ToolCallStore persists per-tool-call timing records.
+type ToolCallStore interface {
+	PutToolCall(ctx context.Context, t ToolCallLog) error
+}
+
 // UsageStore persists UsageLog records and exposes aggregation queries used
 // by the admin UI.
 type UsageStore interface {
 	PutUsage(ctx context.Context, u UsageLog) (int64, error)
 	UpdateAssistantMessageID(ctx context.Context, usageID, msgID int64) error
+	UpdateTurnLatencyMs(ctx context.Context, usageID int64, ms int) error
 
 	// Aggregations
 	UsageTotals(ctx context.Context, since time.Time) (UsageTotals, error)
