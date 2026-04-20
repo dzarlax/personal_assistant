@@ -6,47 +6,31 @@
   .prov-badge--ollama        { background:#e8fef0; color:#16a34a; }
   .prov-badge--claude-bridge { background:#fff3e0; color:#d97706; }
   .prov-badge--local         { background:#f3f4f6; color:#374151; }
-  .role-cur { font-family: var(--font-mono, monospace); font-size: 0.875rem; margin-left: 0.5rem; }
+  .role-cur { font-family: var(--font-mono, monospace); font-size: 0.875rem; }
   .role-row td { vertical-align: middle; }
 </style>
 <div class="card">
   <div class="card__header"><strong>Routing</strong></div>
   <div class="card__body">
     <p style="color:var(--text-secondary);margin:0 0 0.75rem 0;font-size:0.9em;">
-      Each role is backed by one slot. To change a role's model, browse the
+      Each role is a slot. To change a role's backend, browse the
       <strong>OpenRouter</strong> or <strong>Gemini</strong> tab below and click
-      the <code>→ {role}</code> button next to any model.
-      {{if .Roles}}{{with (index .Roles 0)}}{{end}}{{end}}
+      <code>→ {role}</code> next to any model.
+      Multimodal is restricted to Gemini vision models.
     </p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Role</th><th>Slot</th><th>Provider</th><th>Model</th><th></th></tr>
+          <tr><th>Role</th><th>Provider</th><th>Model</th><th></th></tr>
         </thead>
         <tbody>
           {{range .Roles}}
           <tr class="role-row">
             <td><code>{{.Name}}</code></td>
             <td>
-              <form hx-post="/routing/{{.Name}}/set"
-                    hx-target="#routing-section"
-                    hx-swap="innerHTML"
-                    style="display:inline-flex;gap:0.5rem;align-items:center;">
-                <select class="form-select" name="slot" style="min-width:10rem;">
-                  {{$current := .Current}}
-                  {{range .AvailableSlots}}
-                  <option value="{{.Name}}" {{if eq .Name $current}}selected{{end}}>
-                    {{.Name}}{{if .Provider}} [{{.Provider}}]{{end}}
-                  </option>
-                  {{end}}
-                </select>
-                <button class="btn btn--small btn--primary" type="submit">Set</button>
-              </form>
-            </td>
-            <td>
               {{if .Provider}}<span class="prov-badge prov-badge--{{.Provider}}">{{.Provider}}</span>{{else}}<span style="color:var(--text-secondary);">—</span>{{end}}
             </td>
-            <td><span class="role-cur">{{if .ModelID}}{{.ModelID}}{{else}}—{{end}}</span></td>
+            <td><span class="role-cur">{{if .ModelID}}{{.ModelID}}{{else}}<span style="color:var(--text-secondary);">—</span>{{end}}</span></td>
             <td>
               {{if .HasPreset}}
               <button class="btn btn--ghost btn--small suggest-btn"

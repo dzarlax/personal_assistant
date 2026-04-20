@@ -183,27 +183,32 @@ func (r *Router) LoadPersistedOverrides() error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if ov.Simple != "" {
-		r.cfg.Simple = ov.Simple
+	// Only honor persisted role→slot pointers when the slot still exists in
+	// the provider map. A stale override (e.g. a slot renamed or dropped
+	// from config) would silently break routing — better to fall back to
+	// the config default and log the discarded value.
+	slotExists := func(name string) bool {
+		_, ok := r.providers[name]
+		return ok
 	}
-	if ov.Default != "" {
-		r.cfg.Default = ov.Default
+	applyIfExists := func(role, current, persisted string) string {
+		if persisted == "" {
+			return current
+		}
+		if !slotExists(persisted) {
+			r.logger.Warn("discarding stale routing override — slot missing",
+				"role", role, "persisted", persisted, "keeping", current)
+			return current
+		}
+		return persisted
 	}
-	if ov.Fallback != "" {
-		r.cfg.Fallback = ov.Fallback
-	}
-	if ov.Multimodal != "" {
-		r.cfg.Multimodal = ov.Multimodal
-	}
-	if ov.Complex != "" {
-		r.cfg.Complex = ov.Complex
-	}
-	if ov.Classifier != "" {
-		r.cfg.Classifier = ov.Classifier
-	}
-	if ov.Compaction != "" {
-		r.cfg.Compaction = ov.Compaction
-	}
+	r.cfg.Simple = applyIfExists("simple", r.cfg.Simple, ov.Simple)
+	r.cfg.Default = applyIfExists("default", r.cfg.Default, ov.Default)
+	r.cfg.Fallback = applyIfExists("fallback", r.cfg.Fallback, ov.Fallback)
+	r.cfg.Multimodal = applyIfExists("multimodal", r.cfg.Multimodal, ov.Multimodal)
+	r.cfg.Complex = applyIfExists("complex", r.cfg.Complex, ov.Complex)
+	r.cfg.Classifier = applyIfExists("classifier", r.cfg.Classifier, ov.Classifier)
+	r.cfg.Compaction = applyIfExists("compaction", r.cfg.Compaction, ov.Compaction)
 	if ov.ClassifierMinLen != nil {
 		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
 	}
