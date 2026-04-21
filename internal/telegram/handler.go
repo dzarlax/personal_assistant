@@ -81,6 +81,10 @@ type Handler struct {
 	adminBaseURL string // public URL of the admin web UI (empty = feature off)
 	logger       *slog.Logger
 
+	// mcpLoader returns the current MCP config set. When set, /mcp update
+	// reads from here (the DB in prod) instead of the legacy file. May be nil.
+	mcpLoader func(ctx context.Context) (map[string]config.MCPServerConfig, error)
+
 	forwardMu  sync.Mutex
 	forwardBuf map[int64]*forwardedContent
 
@@ -88,6 +92,13 @@ type Handler struct {
 	batches map[int64]*pendingBatch
 
 	sem chan struct{} // concurrency limiter for handleUpdate goroutines
+}
+
+// SetMCPLoader wires the source of truth for the /mcp update command. Pass a
+// closure reading from kv_settings so the command reflects the admin UI's
+// edits instead of the now-unmounted config/mcp.json.
+func (h *Handler) SetMCPLoader(f func(ctx context.Context) (map[string]config.MCPServerConfig, error)) {
+	h.mcpLoader = f
 }
 
 // SetAdminBaseURL sets the public admin UI URL surfaced in /routing as a
@@ -1378,17 +1389,25 @@ func (h *Handler) handleMCPCommand(chatID int64, args string) {
 	switch strings.TrimSpace(args) {
 	case "update", "reload":
 		h.sendPlain(chatID, "Reloading MCP servers...")
-		configs, err := config.LoadMCPServers("config/mcp.json")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var (
+			configs map[string]config.MCPServerConfig
+			err     error
+		)
+		if h.mcpLoader != nil {
+			configs, err = h.mcpLoader(ctx)
+		} else {
+			configs, err = config.LoadMCPServers("config/mcp.json")
+		}
 		if err != nil {
-			h.sendPlain(chatID, "Error loading mcp.json: "+err.Error())
+			h.sendPlain(chatID, "Error loading MCP config: "+err.Error())
 			return
 		}
 		if len(configs) == 0 {
-			h.sendPlain(chatID, "No MCP servers configured in mcp.json.")
+			h.sendPlain(chatID, "No MCP servers configured.")
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		toolCount, err := h.agent.ReloadMCP(ctx, configs)
 		if err != nil {
 			h.sendPlain(chatID, "Error: "+err.Error())

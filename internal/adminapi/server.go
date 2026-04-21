@@ -17,6 +17,12 @@ import (
 	"telegram-agent/internal/llm"
 )
 
+// MCPReloader is the minimal surface the admin UI needs from the bot's MCP
+// client to hot-reload after a save/delete. Agent implements it; nil-safe.
+type MCPReloader interface {
+	ReloadMCP(ctx context.Context, configs map[string]config.MCPServerConfig) (int, error)
+}
+
 // Server wraps an http.Server + the upstream dependencies it needs to render
 // and mutate routing state.
 type Server struct {
@@ -26,10 +32,15 @@ type Server struct {
 	settings   llm.SettingsStore // for AA cache persistence; may be nil
 	usageStore llm.UsageStore    // for Usage/Cost section; may be nil
 	cfgRef     *config.Config    // needed for enumerating OpenRouter slots
+	reloader   MCPReloader       // may be nil (local dev / tests)
 	logger     *slog.Logger
 
 	httpSrv *http.Server
 }
+
+// SetMCPReloader wires the hot-reload hook so saving/deleting MCP servers in
+// the UI applies immediately without a container restart.
+func (s *Server) SetMCPReloader(r MCPReloader) { s.reloader = r }
 
 // New constructs the admin API server but does not start it. Call Start to
 // bind the listener.

@@ -14,6 +14,7 @@
   .mcp-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
   .mcp-bridge-note { background: #fff3e0; color: #92400e; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9em; }
   .mcp-flash-ok { background: #dcfce7; color: #15803d; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9em; }
+  .mcp-flash-err { background: #fee2e2; color: #991b1b; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9em; }
 </style>
 </head>
 <body>
@@ -22,6 +23,14 @@
 
 {{if .SavedName}}
 <div class="mcp-flash-ok">Saved <code>{{.SavedName}}</code>.</div>
+{{end}}
+
+{{if .ReloadOK}}
+<div class="mcp-flash-ok">Bot MCP reloaded: {{.ReloadOK}}.</div>
+{{end}}
+
+{{if .ReloadErr}}
+<div class="mcp-flash-err">Saved, but live reload failed: <code>{{.ReloadErr}}</code>. Restart the container or run <code>/mcp update</code> to retry.</div>
 {{end}}
 
 {{if .BridgeExport}}

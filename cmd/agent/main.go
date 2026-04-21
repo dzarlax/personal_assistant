@@ -385,6 +385,16 @@ func main() {
 	if cfg.AdminAPI.Enabled && cfg.AdminAPI.BaseURL != "" {
 		handler.SetAdminBaseURL(cfg.AdminAPI.BaseURL)
 	}
+	// /mcp update reads the live config from kv_settings (source of truth),
+	// falling back to whatever the legacy file holds when the DB is empty.
+	handler.SetMCPLoader(func(ctx context.Context) (map[string]config.MCPServerConfig, error) {
+		if servers, found, err := adminapi.LoadMCPServersFromSettings(ctx, settingsStore); err != nil {
+			return nil, err
+		} else if found {
+			return servers, nil
+		}
+		return config.LoadMCPServers("config/mcp.json")
+	})
 
 	if cfg.VoiceAPI.Enabled {
 		// chat_id: DB override > config. Non-destructive: if no DB value,
@@ -409,6 +419,7 @@ func main() {
 		adminCfg := cfg.AdminAPI
 		adminCfg.TrustForwardAuth = llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyTrustForwardAuth, adminCfg.TrustForwardAuth)
 		adminSrv := adminapi.New(adminCfg, router, capStore, settingsStore, usageStore, cfg, logger)
+		adminSrv.SetMCPReloader(ag)
 		if err := adminSrv.Start(); err != nil {
 			logger.Error("admin API failed to start", "err", err)
 		} else {

@@ -679,6 +679,28 @@ type uiMCPData struct {
 	Servers      []uiMCPRow
 	BridgeExport string // MCP_BRIDGE_EXPORT_PATH if set, shown as a banner note
 	SavedName    string // non-empty after a successful save — used by template to flash a success message
+	ReloadOK     string // non-empty on successful live reload (e.g. "3 servers, 42 tools")
+	ReloadErr    string // non-empty if the live reload failed after the DB save
+}
+
+// reloadMCPLive hot-reloads the bot's MCP client with the given config set.
+// Uses a detached context with a 30 s timeout — the request's context is
+// typically 5 s which isn't enough to reconnect several servers. Returns
+// human-readable strings for the UI flash; empty strings if no reloader is
+// wired.
+func (s *Server) reloadMCPLive(servers map[string]config.MCPServerConfig) (okMsg, errMsg string) {
+	if s.reloader == nil {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	toolCount, err := s.reloader.ReloadMCP(ctx, servers)
+	if err != nil {
+		s.logger.Warn("mcp live reload failed", "err", err)
+		return "", err.Error()
+	}
+	s.logger.Info("mcp live reload ok", "servers", len(servers), "tools", toolCount)
+	return fmt.Sprintf("%d servers, %d tools", len(servers), toolCount), ""
 }
 
 // loadMCPForUI returns the current MCP list flattened into UI rows. Prefers
@@ -829,12 +851,15 @@ func (s *Server) handleMCPSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("mcp server updated", "name", name, "url", url)
+	reloadOK, reloadErr := s.reloadMCPLive(current)
 	// Re-render the page so the new row shows up.
 	data := uiMCPData{
 		ActiveTab:    "mcp",
 		Servers:      mcpToRows(current),
 		BridgeExport: os.Getenv("MCP_BRIDGE_EXPORT_PATH"),
 		SavedName:    name,
+		ReloadOK:     reloadOK,
+		ReloadErr:    reloadErr,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := render(w, viewMCP, data); err != nil {
@@ -873,10 +898,13 @@ func (s *Server) handleMCPDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("mcp server deleted", "name", name)
+	reloadOK, reloadErr := s.reloadMCPLive(current)
 	data := uiMCPData{
 		ActiveTab:    "mcp",
 		Servers:      mcpToRows(current),
 		BridgeExport: os.Getenv("MCP_BRIDGE_EXPORT_PATH"),
+		ReloadOK:     reloadOK,
+		ReloadErr:    reloadErr,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = render(w, viewMCP, data)
