@@ -21,3 +21,4 @@ openspec
 config/routing.json
 bin/
 /agent
+.claude/
