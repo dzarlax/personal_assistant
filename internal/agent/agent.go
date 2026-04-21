@@ -115,6 +115,16 @@ func (a *Agent) TTSEnabled() bool {
 	return a.tts != nil
 }
 
+// GetChatHistory returns the stored message history for the given chat ID.
+func (a *Agent) GetChatHistory(chatID int64) []llm.Message {
+	return a.store.GetHistory(chatID)
+}
+
+// ClearChatHistory resets the conversation for the given chat ID.
+func (a *Agent) ClearChatHistory(chatID int64) {
+	a.store.ClearHistory(chatID)
+}
+
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
 	tr := newRequestTrace()

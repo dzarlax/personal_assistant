@@ -1,0 +1,103 @@
+{{define "chat"}}<!doctype html>
+<html lang="en">
+<head>
+  <title>Chat — Admin</title>
+  {{template "admin_head" .}}
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 160px); }
+    .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 0; }
+    .chat-msg { max-width: 80%; border-radius: var(--radius, 8px); padding: 0.6rem 0.85rem; }
+    .chat-msg--user      { align-self: flex-end; background: var(--accent, #3b82f6); color: #fff; }
+    .chat-msg--bot       { align-self: flex-start; background: var(--surface-2, #E8E6E3); }
+    .chat-msg__meta { font-size: 0.72em; opacity: 0.7; margin-bottom: 0.25rem; }
+    .chat-tools { opacity: 0.85; }
+    .chat-msg__body { white-space: pre-wrap; word-break: break-word; font-size: 0.9em; line-height: 1.5; }
+    .chat-msg__body.md { white-space: normal; }
+    .chat-msg__body.md p  { margin: 0 0 0.5em; }
+    .chat-msg__body.md p:last-child { margin-bottom: 0; }
+    .chat-msg__body.md pre { background: rgba(0,0,0,0.06); border-radius: 4px; padding: 0.5rem 0.75rem; overflow-x: auto; }
+    .chat-msg__body.md code { font-family: var(--font-mono, monospace); font-size: 0.85em; background: rgba(0,0,0,0.06); padding: 0.1em 0.3em; border-radius: 3px; }
+    .chat-msg__body.md pre code { background: none; padding: 0; }
+    .chat-msg__body.md ul, .chat-msg__body.md ol { padding-left: 1.4em; margin: 0.3em 0; }
+    .chat-msg__body.md blockquote { border-left: 3px solid rgba(0,0,0,0.2); margin: 0.5em 0; padding-left: 0.75em; opacity: 0.8; }
+    .chat-error { color: #c0392b; }
+    .chat-form { display: flex; gap: 0.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(0,0,0,0.1); }
+    .chat-form textarea { flex: 1; resize: vertical; min-height: 3rem; max-height: 10rem; font-size: 0.9em; padding: 0.5rem 0.75rem; border-radius: var(--radius, 8px); border: 1px solid rgba(0,0,0,0.15); font-family: inherit; }
+    .chat-form .btn { align-self: flex-end; }
+    .chat-scroll-sentinel { height: 0; }
+    .htmx-request .chat-sending { display: inline-block; }
+    .chat-sending { display: none; }
+    .htmx-request .chat-send-label { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Admin</h1>
+  {{template "admin_tabs" .}}
+
+  <div class="chat-wrap">
+    <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
+      <button class="btn btn-secondary"
+              hx-post="/chat/clear"
+              hx-target="#chat-messages"
+              hx-swap="outerHTML"
+              hx-confirm="Clear chat history?">Clear</button>
+    </div>
+
+    <div id="chat-messages" class="chat-messages">
+      {{range .History}}
+      <div class="chat-msg chat-msg--{{.Role}}">
+        <div class="chat-msg__meta">{{if eq .Role "user"}}You{{else}}Assistant{{end}}</div>
+        {{if eq .Role "assistant"}}
+        <div class="chat-msg__body md" data-md="{{.Body}}"></div>
+        {{else}}
+        <div class="chat-msg__body">{{.Body}}</div>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+
+    <form class="chat-form"
+          hx-post="/chat/send"
+          hx-target="#chat-messages"
+          hx-swap="beforeend"
+          hx-on::after-request="this.reset(); scrollToBottom()">
+      <textarea name="message"
+                placeholder="Type a message…"
+                rows="2"
+                required
+                hx-on:keydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.closest('form').requestSubmit()}"></textarea>
+      <button type="submit" class="btn btn-primary">
+        <span class="chat-send-label">Send</span>
+        <span class="chat-sending">…</span>
+      </button>
+    </form>
+  </div>
+
+  <script>
+    marked.use({ breaks: true, gfm: true });
+
+    function renderMarkdown() {
+      document.querySelectorAll('.chat-msg__body.md[data-md]').forEach(function(el) {
+        if (el.dataset.rendered) return;
+        el.innerHTML = marked.parse(el.dataset.md || '');
+        el.dataset.rendered = '1';
+      });
+    }
+
+    function scrollToBottom() {
+      var el = document.getElementById('chat-messages');
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+
+    document.body.addEventListener('htmx:afterSettle', function() {
+      renderMarkdown();
+      scrollToBottom();
+    });
+
+    renderMarkdown();
+    scrollToBottom();
+  </script>
+</body>
+</html>
+{{end}}

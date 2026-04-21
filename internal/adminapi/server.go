@@ -33,6 +33,7 @@ type Server struct {
 	usageStore llm.UsageStore    // for Usage/Cost section; may be nil
 	cfgRef     *config.Config    // needed for enumerating OpenRouter slots
 	reloader   MCPReloader       // may be nil (local dev / tests)
+	agent      ChatAgent         // may be nil (admin UI only, no chat tab)
 	logger     *slog.Logger
 
 	httpSrv *http.Server
@@ -79,7 +80,7 @@ func (s *Server) Start() error {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      0, // no write timeout — chat tab may block for minutes
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -131,6 +132,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/settings/", authed(http.HandlerFunc(s.handleSettingSet))) // POST /settings/{key}/set
 	mux.Handle("/mcp", authed(http.HandlerFunc(s.handleMCP)))
 	mux.Handle("/mcp/", authed(http.HandlerFunc(s.handleMCPRouter))) // dispatches {name}/set | {name}/delete
+	mux.Handle("/chat", authed(http.HandlerFunc(s.handleChat)))
+	mux.Handle("/chat/send", authed(http.HandlerFunc(s.handleChatSend)))
+	mux.Handle("/chat/clear", authed(http.HandlerFunc(s.handleChatClear)))
 }
 
 // handleMCPRouter dispatches /mcp/{name}/set and /mcp/{name}/delete to the

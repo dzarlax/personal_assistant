@@ -420,6 +420,7 @@ func main() {
 		adminCfg.TrustForwardAuth = llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyTrustForwardAuth, adminCfg.TrustForwardAuth)
 		adminSrv := adminapi.New(adminCfg, router, capStore, settingsStore, usageStore, cfg, logger)
 		adminSrv.SetMCPReloader(ag)
+		adminSrv.SetAgent(ag)
 		if err := adminSrv.Start(); err != nil {
 			logger.Error("admin API failed to start", "err", err)
 		} else {
