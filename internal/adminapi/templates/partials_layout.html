@@ -46,6 +46,47 @@
   .usage-turns td { vertical-align: top; }
   .usage-turn__q { color: var(--text-primary, #000); margin-bottom: 0.25rem; font-size: 0.9em; }
   .usage-turn__a { color: var(--text-secondary, rgba(0,0,0,0.7)); font-size: 0.9em; }
+
+  /* Form input sizing — 16px minimum on iOS stops the page zooming in on
+     focus. Applied generously so every tab's inputs behave the same. */
+  input, select, textarea { font-size: max(16px, 0.95rem); }
+
+  /* Responsive base — tuned for phone portrait (<=640). Tabs with many
+     entries become horizontally scrollable; body padding shrinks so
+     content uses the full viewport. Tables inherit scrolling via
+     .table-wrap (already wrapped where needed). */
+  @media (max-width: 640px) {
+    body { padding: 0.75rem 0.6rem; }
+    h1 { font-size: 1.35rem; margin-bottom: 0.5rem; }
+    .admin-tabs { overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; margin-bottom: 1rem; }
+    .admin-tabs::-webkit-scrollbar { height: 3px; }
+    .admin-tabs__tab { white-space: nowrap; padding: 0.45rem 0.7rem; font-size: 0.92em; }
+    .admin-section { margin-bottom: 1.25rem; }
+    .filters { gap: 0.5rem; }
+    .filters input[type="text"], .filters input[type="search"] { flex: 1 1 100%; min-width: 0; }
+    .usage-grid { gap: 0.5rem; }
+    .usage-card { padding: 0.6rem 0.75rem; }
+    .usage-card__value { font-size: 1.25em; }
+    .usage-card__label { font-size: 0.72em; }
+    .usage-chart-wrap { padding: 0.5rem; }
+    .preset-banner { padding: 0.6rem 0.75rem; flex-direction: column; align-items: flex-start; }
+    /* Min 40px touch target on primary actions. */
+    .btn { min-height: 40px; }
+    /* Tables that didn't opt into .table-wrap still scroll safely. */
+    table { display: block; overflow-x: auto; max-width: 100%; }
+
+    /* Settings form: stack label/input/button vertically. Same grid but
+       each cell full-width. Save button becomes full-width action too. */
+    .settings-row { grid-template-columns: 1fr; gap: 0.4rem; padding: 0.6rem 0; }
+    .settings-row > :nth-child(2) { width: 100%; }
+    .settings-input { width: 100% !important; }
+
+    /* MCP server cards: stack label above field so 9rem labels don't
+       squeeze mobile inputs; tighter padding. */
+    .mcp-card { padding: 0.75rem; }
+    .mcp-field { grid-template-columns: 1fr; gap: 0.2rem; }
+    .mcp-field label { padding-top: 0; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.03em; }
+  }
 </style>
 {{end}}
 

@@ -80,6 +80,24 @@
     .chat-new-session { font-size: 0.78em; padding: 0.25em 0.85em; border-radius: 999px; border: 1px dashed rgba(0,0,0,0.2); background: transparent; color: inherit; cursor: pointer; opacity: 0.7; transition: opacity 0.15s, background 0.15s; }
     .chat-new-session:hover { opacity: 1; background: rgba(0,0,0,0.04); }
     .chat-new-session:disabled { opacity: 0.35; cursor: default; }
+
+    /* Mobile layout: form stacks vertically, controls row becomes a
+       horizontal strip under the textarea, bubbles use more width. */
+    @media (max-width: 640px) {
+      .chat-wrap { height: calc(100dvh - 110px); }
+      .chat-msg { max-width: 92%; padding: 0.5rem 0.7rem; }
+      .chat-form { flex-direction: column; gap: 0.45rem; }
+      .chat-form textarea { min-height: 2.5rem; font-size: 1rem; }
+      .chat-form .chat-controls { flex-direction: row; min-width: 0; gap: 0.4rem; align-items: center; }
+      .chat-form .chat-controls select { flex: 1; min-width: 0; }
+      .chat-form .chat-controls .btn { min-height: 40px; padding-inline: 1.1em; }
+      .chat-attachment { width: 3.5rem; height: 3.5rem; }
+      .chat-msg__actions { top: -0.55rem; }
+      .chat-msg__actions button { opacity: 1; }
+      /* On touch devices hover is sticky; show actions always on last bubbles. */
+      .chat-msg--last-user .chat-msg__actions,
+      .chat-msg--last-bot  .chat-msg__actions { opacity: 1; }
+    }
   </style>
 </head>
 <body>
