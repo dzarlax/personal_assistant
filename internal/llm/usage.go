@@ -159,6 +159,25 @@ func TurnMetaFrom(ctx context.Context) (TurnMeta, bool) {
 	return m, ok
 }
 
+// forcedRoleKey is a distinct context key for per-request routing overrides.
+// Kept separate from TurnMeta so agent.Process can overwrite the meta without
+// clobbering a role hint set by the calling handler.
+type forcedRoleKey struct{}
+
+// WithForcedRole pins one request to a routing role (simple/default/complex).
+// Router.pick checks this before any other routing rule.
+func WithForcedRole(ctx context.Context, role string) context.Context {
+	if role == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, forcedRoleKey{}, role)
+}
+
+func forcedRoleFrom(ctx context.Context) string {
+	s, _ := ctx.Value(forcedRoleKey{}).(string)
+	return s
+}
+
 // turnChatID returns the ChatID from ctx, or 0 if absent. Convenience helper.
 func turnChatID(ctx context.Context) int64 {
 	if m, ok := TurnMetaFrom(ctx); ok {

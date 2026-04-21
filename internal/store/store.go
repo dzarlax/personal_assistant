@@ -47,6 +47,16 @@ type HistorySnippet struct {
 	BotText   string
 }
 
+// TruncatableStore supports dropping the tail of a conversation. Used by the
+// admin web chat to implement Regenerate / Edit. LastUserMessage returns the
+// most recent user-role row within the current session (id > last reset).
+// TruncateAfter deletes every row with id >= fromID within the same chat.
+type TruncatableStore interface {
+	Store
+	LastUserMessage(chatID int64) (id int64, text string, ok bool)
+	TruncateAfter(chatID int64, fromID int64) error
+}
+
 // SemanticStore extends CompactableStore with vector-similarity history retrieval.
 // AddMessageWithEmbedding stores a message alongside its pre-computed embedding so
 // that GetSemanticHistory can rank older turns by relevance to the current query.

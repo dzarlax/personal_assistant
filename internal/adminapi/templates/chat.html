@@ -7,41 +7,75 @@
   <style>
     .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 160px); }
     .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 0; }
-    .chat-msg { max-width: 80%; border-radius: var(--radius, 8px); padding: 0.6rem 0.85rem; }
+    .chat-msg { max-width: 80%; border-radius: var(--radius, 8px); padding: 0.6rem 0.85rem; position: relative; }
     .chat-msg--user      { align-self: flex-end; background: var(--accent, #3b82f6); color: #fff; }
     .chat-msg--bot       { align-self: flex-start; background: var(--surface-2, #E8E6E3); }
-    .chat-msg__meta { font-size: 0.72em; opacity: 0.7; margin-bottom: 0.25rem; }
-    .chat-tools { opacity: 0.85; }
+    .chat-msg__meta { font-size: 0.72em; opacity: 0.7; margin-bottom: 0.25rem; display: flex; flex-wrap: wrap; gap: 0.35em; align-items: center; }
     .chat-msg__body { white-space: pre-wrap; word-break: break-word; font-size: 0.9em; line-height: 1.5; }
     .chat-msg__body.md { white-space: normal; }
     .chat-msg__body.md p  { margin: 0 0 0.5em; }
     .chat-msg__body.md p:last-child { margin-bottom: 0; }
-    .chat-msg__body.md pre { background: rgba(0,0,0,0.06); border-radius: 4px; padding: 0.5rem 0.75rem; overflow-x: auto; }
+    .chat-msg__body.md pre { background: rgba(0,0,0,0.06); border-radius: 4px; padding: 0.5rem 0.75rem; overflow-x: auto; position: relative; }
     .chat-msg__body.md code { font-family: var(--font-mono, monospace); font-size: 0.85em; background: rgba(0,0,0,0.06); padding: 0.1em 0.3em; border-radius: 3px; }
     .chat-msg__body.md pre code { background: none; padding: 0; }
     .chat-msg__body.md ul, .chat-msg__body.md ol { padding-left: 1.4em; margin: 0.3em 0; }
     .chat-msg__body.md blockquote { border-left: 3px solid rgba(0,0,0,0.2); margin: 0.5em 0; padding-left: 0.75em; opacity: 0.8; }
     .chat-error { color: #c0392b; }
-    .chat-form { display: flex; gap: 0.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(0,0,0,0.1); }
+    .chat-form { display: flex; gap: 0.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(0,0,0,0.1); align-items: stretch; }
     .chat-form textarea { flex: 1; resize: vertical; min-height: 3rem; max-height: 10rem; font-size: 0.9em; padding: 0.5rem 0.75rem; border-radius: var(--radius, 8px); border: 1px solid rgba(0,0,0,0.15); font-family: inherit; }
-    .chat-form .btn { align-self: flex-end; }
+    .chat-form .chat-controls { display: flex; flex-direction: column; gap: 0.35rem; align-items: stretch; min-width: 8rem; }
+    .chat-form select { font-size: 0.8em; padding: 0.25rem 0.4rem; border-radius: var(--radius, 6px); border: 1px solid rgba(0,0,0,0.15); }
     .chat-scroll-sentinel { height: 0; }
-    .htmx-request .chat-sending { display: inline-block; }
-    .chat-sending { display: none; }
-    .htmx-request .chat-send-label { display: none; }
+
+    /* Tool-call chips shown in the bot bubble meta line. */
+    .chat-tool-chip { display: inline-block; font-size: 0.72em; padding: 0.05em 0.45em; border-radius: 999px; background: rgba(0,0,0,0.08); opacity: 0.9; }
+    .chat-tool-chip--done { background: rgba(16, 185, 129, 0.15); }
+
+    /* Typing indicator: three bouncing dots. */
+    .chat-typing { display: inline-flex; gap: 0.2em; padding: 0.3em 0; }
+    .chat-typing span { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; opacity: 0.35; animation: chatBounce 1.1s infinite ease-in-out; }
+    .chat-typing span:nth-child(2) { animation-delay: 0.15s; }
+    .chat-typing span:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes chatBounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+      40%           { transform: scale(1);   opacity: 0.85; }
+    }
+
+    /* Per-message hover actions (Regenerate on last bot, Edit on last user). */
+    .chat-msg__actions { position: absolute; top: -0.6rem; right: 0.4rem; display: none; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
+    .chat-msg--last-user .chat-msg__actions,
+    .chat-msg--last-bot  .chat-msg__actions { display: flex; }
+    .chat-msg--last-user:hover .chat-msg__actions,
+    .chat-msg--last-bot:hover  .chat-msg__actions { opacity: 1; }
+    .chat-msg__actions button { font-size: 0.72em; padding: 0.15em 0.5em; border-radius: 4px; border: 1px solid rgba(0,0,0,0.15); background: rgba(255,255,255,0.95); cursor: pointer; }
+    .chat-msg__actions button:disabled { opacity: 0.5; cursor: default; }
+
+    /* Copy button injected into <pre> blocks by hydrateCodeBlocks(). */
+    .chat-code-copy { position: absolute; top: 0.35rem; right: 0.35rem; font-size: 0.7em; padding: 0.1em 0.4em; border-radius: 4px; border: 1px solid rgba(0,0,0,0.15); background: rgba(255,255,255,0.9); cursor: pointer; opacity: 0.6; }
+    .chat-code-copy:hover { opacity: 1; }
+
+    /* Attachment preview strip above the textarea. */
+    .chat-attachments { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }
+    .chat-attachments:empty { display: none; }
+    .chat-attachment { position: relative; width: 4rem; height: 4rem; border-radius: 6px; overflow: hidden; border: 1px solid rgba(0,0,0,0.15); }
+    .chat-attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .chat-attachment button { position: absolute; top: 0; right: 0; width: 1.25rem; height: 1.25rem; padding: 0; line-height: 1; font-size: 0.85em; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 0 0 0 6px; cursor: pointer; }
+
+    /* Inline image in a chat bubble (uploaded by user). */
+    .chat-msg__body img { max-width: 100%; border-radius: 6px; margin: 0.3em 0; }
+
+    /* Drag-over visual cue on the whole chat wrap. */
+    .chat-wrap.drop-active { outline: 2px dashed var(--accent, #3b82f6); outline-offset: -4px; }
   </style>
 </head>
 <body>
   <h1>Admin</h1>
   {{template "admin_tabs" .}}
 
-  <div class="chat-wrap">
-    <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
-      <button class="btn btn-secondary"
-              hx-post="/chat/clear"
-              hx-target="#chat-messages"
-              hx-swap="outerHTML"
-              hx-confirm="Clear chat history?">Clear</button>
+  <div class="chat-wrap" id="chat-wrap">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+      <div style="font-size:0.8em; opacity:0.7;" id="chat-status"></div>
+      <button class="btn btn-secondary" id="chat-clear-btn">Clear</button>
     </div>
 
     <div id="chat-messages" class="chat-messages">
@@ -57,46 +91,478 @@
       {{end}}
     </div>
 
-    <form class="chat-form"
-          hx-post="/chat/send"
-          hx-target="#chat-messages"
-          hx-swap="beforeend"
-          hx-on::after-request="this.reset(); scrollToBottom()">
-      <textarea name="message"
-                placeholder="Type a message…"
+    <div class="chat-attachments" id="chat-attachments"></div>
+
+    <form class="chat-form" id="chat-form">
+      <textarea name="message" id="chat-input"
+                placeholder="Type a message… (Shift+Enter for newline, paste/drop images to attach)"
                 rows="2"
-                required
-                hx-on:keydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.closest('form').requestSubmit()}"></textarea>
-      <button type="submit" class="btn btn-primary">
-        <span class="chat-send-label">Send</span>
-        <span class="chat-sending">…</span>
-      </button>
+                required></textarea>
+      <div class="chat-controls">
+        <select id="chat-role-override" title="Routing role">
+          <option value="">Auto-route</option>
+          <option value="simple">Simple</option>
+          <option value="default">Default</option>
+          <option value="complex">Complex</option>
+        </select>
+        <button type="submit" class="btn btn-primary" id="chat-send-btn">Send</button>
+        <button type="button" class="btn btn-secondary" id="chat-stop-btn" hidden>Stop</button>
+      </div>
     </form>
   </div>
 
   <script>
     marked.use({ breaks: true, gfm: true });
 
-    function renderMarkdown() {
-      document.querySelectorAll('.chat-msg__body.md[data-md]').forEach(function(el) {
+    // ============================================================
+    // Persistent draft.
+    // ============================================================
+    var DRAFT_KEY = 'adminchat.draft';
+    var inputEl = document.getElementById('chat-input');
+    try { inputEl.value = localStorage.getItem(DRAFT_KEY) || ''; } catch (_) {}
+    inputEl.addEventListener('input', function() {
+      try { localStorage.setItem(DRAFT_KEY, inputEl.value); } catch (_) {}
+    });
+
+    // ============================================================
+    // Scroll helpers — only auto-scroll when near the bottom so users
+    // can scroll up to read history without being yanked back.
+    // ============================================================
+    var messagesEl = document.getElementById('chat-messages');
+    function isNearBottom() {
+      return (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 80;
+    }
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    function autoScroll() {
+      if (isNearBottom()) scrollToBottom();
+    }
+
+    // ============================================================
+    // Markdown rendering + code copy buttons.
+    // ============================================================
+    function renderMarkdown(root) {
+      (root || document).querySelectorAll('.chat-msg__body.md[data-md]').forEach(function(el) {
         if (el.dataset.rendered) return;
         el.innerHTML = marked.parse(el.dataset.md || '');
         el.dataset.rendered = '1';
+        hydrateCodeBlocks(el);
+      });
+    }
+    function hydrateCodeBlocks(root) {
+      root.querySelectorAll('pre').forEach(function(pre) {
+        if (pre.querySelector('.chat-code-copy')) return;
+        var btn = document.createElement('button');
+        btn.className = 'chat-code-copy';
+        btn.type = 'button';
+        btn.textContent = 'copy';
+        btn.addEventListener('click', function() {
+          var code = pre.querySelector('code');
+          var txt = (code ? code.textContent : pre.textContent) || '';
+          navigator.clipboard.writeText(txt).then(function() {
+            btn.textContent = 'copied';
+            setTimeout(function() { btn.textContent = 'copy'; }, 1200);
+          });
+        });
+        pre.appendChild(btn);
       });
     }
 
-    function scrollToBottom() {
-      var el = document.getElementById('chat-messages');
-      if (el) el.scrollTop = el.scrollHeight;
+    // ============================================================
+    // Bubble builders.
+    // ============================================================
+    function appendUserBubble(text, attachments) {
+      var ts = new Date().toTimeString().slice(0, 5);
+      var div = document.createElement('div');
+      div.className = 'chat-msg chat-msg--user';
+      var meta = document.createElement('div');
+      meta.className = 'chat-msg__meta';
+      meta.textContent = 'You \u00B7 ' + ts;
+      var body = document.createElement('div');
+      body.className = 'chat-msg__body';
+      if (attachments && attachments.length) {
+        attachments.forEach(function(a) {
+          var img = document.createElement('img');
+          img.src = a.dataURL;
+          body.appendChild(img);
+        });
+      }
+      if (text) {
+        var p = document.createElement('div');
+        p.textContent = text;
+        body.appendChild(p);
+      }
+      div.appendChild(meta);
+      div.appendChild(body);
+      messagesEl.appendChild(div);
+      scrollToBottom();
+      updateLastActions();
+      return div;
     }
 
-    document.body.addEventListener('htmx:afterSettle', function() {
-      renderMarkdown();
+    function createBotBubble() {
+      var ts = new Date().toTimeString().slice(0, 5);
+      var div = document.createElement('div');
+      div.className = 'chat-msg chat-msg--bot';
+      div.innerHTML =
+        '<div class="chat-msg__meta">' +
+          '<span class="chat-msg__model">…</span>' +
+          '<span>\u00B7 ' + ts + '</span>' +
+          '<span class="chat-msg__tools"></span>' +
+        '</div>' +
+        '<div class="chat-msg__body">' +
+          '<span class="chat-typing"><span></span><span></span><span></span></span>' +
+        '</div>';
+      messagesEl.appendChild(div);
       scrollToBottom();
+      updateLastActions();
+      return {
+        root: div,
+        body: div.querySelector('.chat-msg__body'),
+        modelTag: div.querySelector('.chat-msg__model'),
+        toolsTag: div.querySelector('.chat-msg__tools'),
+        streamedText: '',
+      };
+    }
+
+    // ============================================================
+    // SSE parser. Reads event/data pairs from a fetch body stream.
+    // ============================================================
+    function parseSSE(raw) {
+      var event = 'message';
+      var data = [];
+      raw.split('\n').forEach(function(line) {
+        if (!line || line.charAt(0) === ':') return; // ignore ping/comments
+        if (line.indexOf('event: ') === 0) event = line.slice(7);
+        else if (line.indexOf('data: ') === 0) data.push(line.slice(6));
+      });
+      return {event: event, data: data.join('\n')};
+    }
+
+    // ============================================================
+    // Attachments state (images pasted/dropped into the input).
+    // ============================================================
+    var attachments = []; // [{dataURL, mime}]
+    var attachmentsEl = document.getElementById('chat-attachments');
+
+    function renderAttachments() {
+      attachmentsEl.innerHTML = '';
+      attachments.forEach(function(a, idx) {
+        var el = document.createElement('div');
+        el.className = 'chat-attachment';
+        el.innerHTML = '<img alt="attachment"><button type="button" title="Remove">×</button>';
+        el.querySelector('img').src = a.dataURL;
+        el.querySelector('button').addEventListener('click', function() {
+          attachments.splice(idx, 1);
+          renderAttachments();
+        });
+        attachmentsEl.appendChild(el);
+      });
+    }
+
+    function addFiles(files) {
+      Array.prototype.forEach.call(files, function(f) {
+        if (!f.type || f.type.indexOf('image/') !== 0) return;
+        var r = new FileReader();
+        r.onload = function() {
+          attachments.push({dataURL: r.result, mime: f.type});
+          renderAttachments();
+        };
+        r.readAsDataURL(f);
+      });
+    }
+
+    inputEl.addEventListener('paste', function(ev) {
+      if (!ev.clipboardData) return;
+      var files = [];
+      Array.prototype.forEach.call(ev.clipboardData.items, function(it) {
+        if (it.kind === 'file') {
+          var f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      });
+      if (files.length) {
+        ev.preventDefault();
+        addFiles(files);
+      }
     });
 
+    var wrapEl = document.getElementById('chat-wrap');
+    ['dragenter', 'dragover'].forEach(function(evName) {
+      wrapEl.addEventListener(evName, function(ev) { ev.preventDefault(); wrapEl.classList.add('drop-active'); });
+    });
+    ['dragleave', 'drop'].forEach(function(evName) {
+      wrapEl.addEventListener(evName, function(ev) {
+        if (evName === 'drop') ev.preventDefault();
+        if (evName === 'dragleave' && ev.target !== wrapEl) return;
+        wrapEl.classList.remove('drop-active');
+      });
+    });
+    wrapEl.addEventListener('drop', function(ev) {
+      if (ev.dataTransfer && ev.dataTransfer.files) addFiles(ev.dataTransfer.files);
+    });
+
+    // ============================================================
+    // Streaming submit.
+    // ============================================================
+    var currentController = null;
+    var sendBtn = document.getElementById('chat-send-btn');
+    var stopBtn = document.getElementById('chat-stop-btn');
+    var statusEl = document.getElementById('chat-status');
+
+    function setStreaming(on) {
+      sendBtn.hidden = on;
+      stopBtn.hidden = !on;
+      statusEl.textContent = on ? 'streaming…' : '';
+      messagesEl.querySelectorAll('.chat-msg__actions button').forEach(function(b) {
+        b.disabled = on;
+      });
+    }
+
+    // ============================================================
+    // Regenerate / Edit: show on the last user/bot bubble only.
+    // ============================================================
+    async function popLastTurn() {
+      var r = await fetch('/chat/pop', {method: 'POST'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json(); // {ok: bool, text: string}
+    }
+
+    function removeLastTurnFromDOM() {
+      // Walk from the end and remove until (inclusive) the last user bubble.
+      var children = Array.prototype.slice.call(messagesEl.children);
+      for (var i = children.length - 1; i >= 0; i--) {
+        var el = children[i];
+        var wasUser = el.classList && el.classList.contains('chat-msg--user');
+        messagesEl.removeChild(el);
+        if (wasUser) break;
+      }
+    }
+
+    async function regenerateLast() {
+      if (currentController) return;
+      try {
+        var r = await popLastTurn();
+        if (!r.ok || !r.text) return;
+        removeLastTurnFromDOM();
+        submitMessage(r.text, []);
+      } catch (err) {
+        statusEl.textContent = 'regen failed: ' + err.message;
+      }
+    }
+
+    async function editLast() {
+      if (currentController) return;
+      try {
+        var r = await popLastTurn();
+        if (!r.ok) return;
+        removeLastTurnFromDOM();
+        inputEl.value = r.text || '';
+        try { localStorage.setItem(DRAFT_KEY, inputEl.value); } catch (_) {}
+        inputEl.focus();
+        inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+        updateLastActions();
+      } catch (err) {
+        statusEl.textContent = 'edit failed: ' + err.message;
+      }
+    }
+
+    function ensureActions(div) {
+      if (div.querySelector('.chat-msg__actions')) return;
+      var isUser = div.classList.contains('chat-msg--user');
+      var wrap = document.createElement('div');
+      wrap.className = 'chat-msg__actions';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      if (isUser) {
+        btn.textContent = '\u270E Edit';
+        btn.title = 'Edit last message (drops the assistant reply)';
+        btn.addEventListener('click', editLast);
+      } else {
+        btn.textContent = '\u21BB Regenerate';
+        btn.title = 'Regenerate the last reply';
+        btn.addEventListener('click', regenerateLast);
+      }
+      wrap.appendChild(btn);
+      div.appendChild(wrap);
+    }
+
+    function updateLastActions() {
+      messagesEl.querySelectorAll('.chat-msg--last-user, .chat-msg--last-bot').forEach(function(el) {
+        el.classList.remove('chat-msg--last-user', 'chat-msg--last-bot');
+      });
+      var userBubbles = messagesEl.querySelectorAll('.chat-msg--user');
+      var botBubbles  = messagesEl.querySelectorAll('.chat-msg--bot');
+      userBubbles.forEach(ensureActions);
+      botBubbles.forEach(ensureActions);
+      if (userBubbles.length) userBubbles[userBubbles.length - 1].classList.add('chat-msg--last-user');
+      if (botBubbles.length)  botBubbles[botBubbles.length - 1].classList.add('chat-msg--last-bot');
+    }
+
+    stopBtn.addEventListener('click', function() {
+      if (currentController) currentController.abort();
+    });
+
+    async function submitMessage(text, atts) {
+      if (!text && (!atts || !atts.length)) return;
+      if (currentController) return; // disallow concurrent
+
+      appendUserBubble(text, atts);
+      var bot = createBotBubble();
+      setStreaming(true);
+
+      var ctrl = new AbortController();
+      currentController = ctrl;
+
+      var body = new URLSearchParams();
+      body.append('message', text);
+      var role = document.getElementById('chat-role-override').value;
+      if (role) body.append('role', role);
+      // Attachments are not yet wired into the stream endpoint; the UI
+      // captures them so the server-side handler can add support in a
+      // follow-up without any client changes.
+      if (atts && atts.length) {
+        atts.forEach(function(a) { body.append('image', a.dataURL); });
+      }
+
+      try {
+        var resp = await fetch('/chat/stream', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: body.toString(),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok) {
+          var txt = await resp.text();
+          throw new Error('HTTP ' + resp.status + ': ' + txt);
+        }
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buf = '';
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buf += decoder.decode(chunk.value, {stream: true});
+          var parts = buf.split('\n\n');
+          buf = parts.pop();
+          for (var i = 0; i < parts.length; i++) {
+            handleEvent(parseSSE(parts[i]), bot);
+          }
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          bot.body.innerHTML = '<span class="chat-error">Error: ' + (err.message || err) + '</span>';
+        } else {
+          bot.body.innerHTML = '<span class="chat-error">Stopped.</span>';
+        }
+      } finally {
+        currentController = null;
+        setStreaming(false);
+        updateLastActions();
+      }
+    }
+
+    function handleEvent(ev, bot) {
+      if (ev.event === 'token') {
+        var obj;
+        try { obj = JSON.parse(ev.data); } catch (_) { return; }
+        if (!obj.delta) return;
+        if (!bot.streamedText) {
+          // First token — replace the typing indicator.
+          bot.body.textContent = '';
+        }
+        bot.streamedText += obj.delta;
+        bot.body.textContent = bot.streamedText;
+        autoScroll();
+      } else if (ev.event === 'tool_call') {
+        try {
+          var t = JSON.parse(ev.data);
+          var chip = document.createElement('span');
+          chip.className = 'chat-tool-chip';
+          chip.textContent = '\u{1F527} ' + t.name;
+          bot.toolsTag.appendChild(chip);
+          // Between tool iterations the assistant restarts text; clear the
+          // partial stream so the next iteration starts fresh.
+          bot.streamedText = '';
+          bot.body.innerHTML = '<span class="chat-typing"><span></span><span></span><span></span></span>';
+          autoScroll();
+        } catch (_) {}
+      } else if (ev.event === 'done') {
+        try {
+          var d = JSON.parse(ev.data);
+          var final = d.text || bot.streamedText;
+          bot.body.innerHTML = '';
+          var md = document.createElement('div');
+          md.className = 'chat-msg__body md';
+          md.dataset.md = final;
+          md.innerHTML = marked.parse(final);
+          md.dataset.rendered = '1';
+          hydrateCodeBlocks(md);
+          bot.body.replaceWith(md);
+          bot.body = md;
+          if (d.model) bot.modelTag.textContent = d.model;
+          // Mark tool chips as completed.
+          bot.toolsTag.querySelectorAll('.chat-tool-chip').forEach(function(c) {
+            c.classList.add('chat-tool-chip--done');
+          });
+          autoScroll();
+        } catch (_) {}
+      } else if (ev.event === 'error') {
+        try {
+          var e = JSON.parse(ev.data);
+          bot.body.innerHTML = '<span class="chat-error">Error: ' + (e.message || 'unknown') + '</span>';
+        } catch (_) {
+          bot.body.innerHTML = '<span class="chat-error">Error</span>';
+        }
+      }
+    }
+
+    // ============================================================
+    // Form wiring.
+    // ============================================================
+    var formEl = document.getElementById('chat-form');
+    formEl.addEventListener('submit', function(ev) {
+      ev.preventDefault();
+      var text = inputEl.value.trim();
+      if (!text && !attachments.length) return;
+      var atts = attachments.slice();
+      attachments = [];
+      renderAttachments();
+      inputEl.value = '';
+      try { localStorage.setItem(DRAFT_KEY, ''); } catch (_) {}
+      inputEl.focus();
+      submitMessage(text, atts);
+    });
+
+    inputEl.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+        ev.preventDefault();
+        formEl.requestSubmit();
+      } else if (ev.key === 'Escape' && currentController) {
+        currentController.abort();
+      }
+    });
+
+    // ============================================================
+    // Clear button.
+    // ============================================================
+    document.getElementById('chat-clear-btn').addEventListener('click', function() {
+      if (!confirm('Clear chat history?')) return;
+      fetch('/chat/clear', {method: 'POST'}).then(function(r) { return r.text(); }).then(function(html) {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        var fresh = tmp.firstElementChild;
+        if (fresh) messagesEl.replaceWith(fresh);
+        messagesEl = document.getElementById('chat-messages');
+      });
+    });
+
+    // Initial render + focus.
     renderMarkdown();
+    updateLastActions();
     scrollToBottom();
+    inputEl.focus();
   </script>
 </body>
 </html>

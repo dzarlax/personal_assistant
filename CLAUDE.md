@@ -321,7 +321,13 @@ Routes:
 - `POST /slots/<slot>/assign` (form: `model_id=...`) — `Router.SetProviderModel` with caps from the store; returns refreshed `routing` partial
 - `POST /routing/<role>/set` (form: `slot=...`) — `Router.SetRole` (maps `default` → `primary`); returns refreshed `routing` partial
 - `POST /refresh` — `llm.FetchOpenRouterModels` + upsert; returns refreshed `models_tbody` partial
+- `GET /chat` — chat page; history scoped to the caller's per-user chat id (FNV-64 hash of `X-authentik-username`, mapped to negative range; falls back to `-1` under bearer-token auth)
+- `POST /chat/stream` — SSE endpoint. Body: `message`, optional `image[]` (base64 data URIs), optional `role` (simple/default/complex). Drives `agent.ProcessStream`; emits events `token` (`{delta}`), `tool_call` (`{name}`), `done` (`{model, tools, text}`), `error` (`{message}`), plus `:ping` comments every 15 s. Body capped at 25 MB; per-request routing override via `llm.WithForcedRole(ctx, role)`
+- `POST /chat/pop` — drops the last user turn (via `agent.PopLastUserTurn` → `store.TruncatableStore`) and returns `{ok, text}`. UI uses this for Regenerate (pop + re-stream with returned text) and Edit (pop + put text back into the input)
+- `POST /chat/clear` — resets session via `store.ClearHistory` for the caller's chat id; returns empty message container
 - `GET /healthz` — unauthenticated liveness probe
+
+**Chat tab notes:** `WriteTimeout: 0` on the admin HTTP server (long agent chains). Client is a fetch + `ReadableStream` SSE consumer (not htmx / `EventSource`) so the same endpoint can drive a future native app. Typing indicator is three bouncing dots until the first `token` event; tool-call chips (🔧) appear inline in the bot bubble meta; `Esc` or the Stop button abort via `AbortController`. Markdown rendered client-side via `marked.js` (CDN) on each `done` event, with copy-buttons hydrated on `<pre>` blocks. Draft persisted in `localStorage`. Hover actions (Edit on last user bubble, Regenerate on last bot bubble) call `/chat/pop`. Images pasted or dropped into the form are attached as `image_url` parts in a multimodal `llm.Message`.
 
 The admin API never imports the Authentik library — it only _trusts_ the forwarded header. All actual authentication happens upstream in Traefik via the `authentik-auth` middleware. When running without authentik (local dev), the bearer token flow is the default.
 

@@ -755,6 +755,27 @@ func (r *Router) pick(ctx context.Context, messages []Message) (Provider, string
 
 	multimodal := hasMultimodalContent(messages)
 
+	// Per-request forced role from ctx (e.g. admin UI "Complex" dropdown).
+	// Takes precedence over the global override so different clients can pin
+	// different roles without fighting each other.
+	if forced := forcedRoleFrom(ctx); forced != "" {
+		var key, roleName string
+		switch forced {
+		case "simple":
+			key, roleName = cfg.Simple, "simple"
+		case "default":
+			key, roleName = cfg.Default, "default"
+		case "complex":
+			key, roleName = cfg.Complex, "complex"
+		}
+		if p := r.get(key); p != nil {
+			if !multimodal || supportsVision(p) {
+				slog.Info("routing", "reason", "forced", "role", forced, "provider", p.Name())
+				return p, roleName
+			}
+		}
+	}
+
 	if override != "" {
 		if p := r.get(override); p != nil {
 			if !multimodal || supportsVision(p) {

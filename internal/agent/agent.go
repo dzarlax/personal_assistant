@@ -125,6 +125,27 @@ func (a *Agent) ClearChatHistory(chatID int64) {
 	a.store.ClearHistory(chatID)
 }
 
+// PopLastUserTurn removes the most recent user message and everything after it
+// (assistant replies, tool calls, tool results), and returns the user text so
+// callers can re-submit it. Returns ok=false when the store backend does not
+// support truncation (e.g. in-memory) or when no user message exists in the
+// current session. Used by the admin chat for Regenerate / Edit.
+func (a *Agent) PopLastUserTurn(chatID int64) (string, bool) {
+	ts, ok := a.store.(store.TruncatableStore)
+	if !ok {
+		return "", false
+	}
+	id, text, has := ts.LastUserMessage(chatID)
+	if !has {
+		return "", false
+	}
+	if err := ts.TruncateAfter(chatID, id); err != nil {
+		a.logger.Warn("truncate after last user msg failed", "chat_id", chatID, "from_id", id, "err", err)
+		return "", false
+	}
+	return text, true
+}
+
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
 	tr := newRequestTrace()

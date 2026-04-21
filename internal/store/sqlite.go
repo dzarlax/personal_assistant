@@ -304,6 +304,29 @@ func (s *SQLite) ClearHistory(chatID int64) {
 	s.db.Exec(`INSERT INTO messages (chat_id, role, content, is_reset) VALUES (?, 'system', 'CONTEXT_RESET', 1)`, chatID) //nolint:errcheck
 }
 
+// LastUserMessage returns the most recent user-role row within the current
+// session (id > last reset). Used by admin chat for Regenerate / Edit.
+func (s *SQLite) LastUserMessage(chatID int64) (int64, string, bool) {
+	lastReset := s.lastResetID(chatID)
+	var id int64
+	var content string
+	err := s.db.QueryRow(`
+		SELECT id, content FROM messages
+		WHERE chat_id = ? AND id > ? AND role = 'user' AND is_compacted = 0
+		ORDER BY id DESC LIMIT 1`,
+		chatID, lastReset).Scan(&id, &content)
+	if err != nil {
+		return 0, "", false
+	}
+	return id, content, true
+}
+
+// TruncateAfter deletes every row with id >= fromID within chatID.
+func (s *SQLite) TruncateAfter(chatID int64, fromID int64) error {
+	_, err := s.db.Exec(`DELETE FROM messages WHERE chat_id = ? AND id >= ?`, chatID, fromID)
+	return err
+}
+
 // insertSessionBreak starts a new session and carries over the last summary.
 func (s *SQLite) insertSessionBreak(chatID int64, reason string) {
 	s.db.Exec(`INSERT INTO messages (chat_id, role, content, is_reset) VALUES (?, 'system', ?, 1)`, chatID, reason) //nolint:errcheck

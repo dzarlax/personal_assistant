@@ -398,6 +398,31 @@ func (p *Postgres) ClearHistory(chatID int64) {
 	p.pool.Exec(ctx, `INSERT INTO messages (chat_id, role, content, is_reset) VALUES ($1, 'system', 'CONTEXT_RESET', TRUE)`, chatID) //nolint:errcheck
 }
 
+// LastUserMessage returns the most recent user-role row within the current
+// session (id > last reset). Used by admin chat for Regenerate / Edit.
+func (p *Postgres) LastUserMessage(chatID int64) (int64, string, bool) {
+	ctx := context.Background()
+	lastReset := p.lastResetID(ctx, chatID)
+	var id int64
+	var content string
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, content FROM messages
+		WHERE chat_id = $1 AND id > $2 AND role = 'user' AND is_compacted = FALSE
+		ORDER BY id DESC LIMIT 1`,
+		chatID, lastReset).Scan(&id, &content)
+	if err != nil {
+		return 0, "", false
+	}
+	return id, content, true
+}
+
+// TruncateAfter deletes every row with id >= fromID within chatID.
+func (p *Postgres) TruncateAfter(chatID int64, fromID int64) error {
+	ctx := context.Background()
+	_, err := p.pool.Exec(ctx, `DELETE FROM messages WHERE chat_id = $1 AND id >= $2`, chatID, fromID)
+	return err
+}
+
 func (p *Postgres) insertSessionBreak(ctx context.Context, chatID int64, reason string) {
 	p.pool.Exec(ctx, `INSERT INTO messages (chat_id, role, content, is_reset) VALUES ($1, 'system', $2, TRUE)`, chatID, reason) //nolint:errcheck
 
