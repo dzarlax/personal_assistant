@@ -1,12 +1,11 @@
 {{define "index"}}<!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Admin — Personal Assistant</title>
+  <title>Routing & Models · Personal Assistant</title>
   {{template "admin_head" .}}
 </head>
 <body>
-  <h1>Personal Assistant · Admin</h1>
-  {{template "admin_tabs" .}}
+  {{template "admin_header" .}}
 
   <section class="admin-section" id="routing-section">
     {{template "routing_section" .Routing}}

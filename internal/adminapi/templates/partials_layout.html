@@ -6,7 +6,9 @@
 <script src="/static/htmx.min.js" defer></script>
 <style>
   body { padding: 1.5rem 2rem; margin: 0; max-width: none; }
-  h1   { margin-bottom: 1rem; }
+  h1   { margin: 0; }
+  .admin-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
+  .admin-header__brand { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; }
   .admin-tabs { display: flex; gap: 0.25rem; margin-bottom: 1.5rem; border-bottom: 1px solid rgba(0,0,0,0.1); }
   .admin-tabs__tab { padding: 0.5rem 1rem; color: var(--text-secondary, rgba(0,0,0,0.6)); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .admin-tabs__tab:hover { color: var(--text-primary, #000); }
@@ -93,6 +95,13 @@
     .mcp-field label { padding-top: 0; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.03em; }
   }
 </style>
+{{end}}
+
+{{define "admin_header"}}
+<header class="admin-header">
+  <h1 class="admin-header__brand">Personal Assistant</h1>
+</header>
+{{template "admin_tabs" .}}
 {{end}}
 
 {{define "admin_tabs"}}

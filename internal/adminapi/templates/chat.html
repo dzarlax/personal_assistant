@@ -1,7 +1,7 @@
 {{define "chat"}}<!doctype html>
 <html lang="en">
 <head>
-  <title>Chat — Admin</title>
+  <title>Chat · Personal Assistant</title>
   {{template "admin_head" .}}
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
@@ -100,8 +100,7 @@
   </style>
 </head>
 <body>
-  <h1>Admin</h1>
-  {{template "admin_tabs" .}}
+  {{template "admin_header" .}}
 
   <div class="chat-wrap" id="chat-wrap">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem; min-height:1.6rem;">

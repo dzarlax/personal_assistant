@@ -1,7 +1,7 @@
 {{define "mcp"}}
 <!doctype html>
 <html>
-<head>{{template "admin_head" .}}<title>MCP — Admin</title>
+<head>{{template "admin_head" .}}<title>MCP · Personal Assistant</title>
 <style>
   .mcp-grid { display: grid; gap: 1rem; }
   .mcp-card { border: 1px solid rgba(0,0,0,0.08); border-radius: var(--radius, 8px); padding: 1rem; background: var(--surface-1, #fff); }
@@ -18,8 +18,7 @@
 </style>
 </head>
 <body>
-<h1>Admin</h1>
-{{template "admin_tabs" .}}
+{{template "admin_header" .}}
 
 {{if .SavedName}}
 <div class="mcp-flash-ok">Saved <code>{{.SavedName}}</code>.</div>

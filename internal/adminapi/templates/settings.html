@@ -1,7 +1,7 @@
 {{define "settings"}}
 <!doctype html>
 <html>
-<head>{{template "admin_head" .}}<title>Settings — Admin</title>
+<head>{{template "admin_head" .}}<title>Settings · Personal Assistant</title>
 <style>
   .settings-form { max-width: 42rem; }
   .settings-row { display: grid; grid-template-columns: 1fr auto auto; gap: 0.5rem; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid rgba(0,0,0,0.08); }
@@ -13,8 +13,7 @@
 </style>
 </head>
 <body>
-<h1>Admin</h1>
-{{template "admin_tabs" .}}
+{{template "admin_header" .}}
 
 <div class="card settings-form">
   <div class="card__header"><strong>Runtime Settings</strong></div>
