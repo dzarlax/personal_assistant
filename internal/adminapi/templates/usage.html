@@ -13,44 +13,44 @@
   </div>
 
   <!-- Headline cards -->
-  <div class="usage-grid">
-    <div class="usage-card" title="Sum of input + output tokens over the active window">
-      <div class="usage-card__label">Tokens ({{.Period}})</div>
-      <div class="usage-card__value">{{tokenShort (add .Totals.PromptTokens .Totals.CompletionTokens)}}</div>
-      <div class="usage-card__sub">
+  <div class="kpi-bar">
+    <div class="kpi-item" title="Sum of input + output tokens over the active window">
+      <div class="kpi-item__label">Tokens ({{.Period}})</div>
+      <div class="kpi-item__value">{{tokenShort (add .Totals.PromptTokens .Totals.CompletionTokens)}}</div>
+      <div class="kpi-item__note">
         {{tokenShort .Totals.PromptTokens}} in / {{tokenShort .Totals.CompletionTokens}} out
       </div>
     </div>
-    <div class="usage-card" title="LLM calls (including classifier, compaction, fallback retries)">
-      <div class="usage-card__label">Calls ({{.Period}})</div>
-      <div class="usage-card__value">{{intFmt .Totals.Calls}}</div>
-      <div class="usage-card__sub">
+    <div class="kpi-item" title="LLM calls (including classifier, compaction, fallback retries)">
+      <div class="kpi-item__label">Calls ({{.Period}})</div>
+      <div class="kpi-item__value">{{intFmt .Totals.Calls}}</div>
+      <div class="kpi-item__note">
         {{if gt .Totals.ErrorCount 0}}{{.Totals.ErrorCount}} errors{{else}}all ok{{end}}
       </div>
     </div>
-    <div class="usage-card" title="Authoritative USD reported by OpenRouter (usage.cost). Claude bridge reports total_cost_usd. Other providers don't report cost.">
-      <div class="usage-card__label">Cost ({{.Period}})</div>
-      <div class="usage-card__value">{{priceFmt .Totals.CostUSD}}</div>
-      <div class="usage-card__sub">
+    <div class="kpi-item" title="Authoritative USD reported by OpenRouter (usage.cost). Claude bridge reports total_cost_usd. Other providers don't report cost.">
+      <div class="kpi-item__label">Cost ({{.Period}})</div>
+      <div class="kpi-item__value">{{priceFmt .Totals.CostUSD}}</div>
+      <div class="kpi-item__note">
         24h: {{priceFmt .TotalsToday.CostUSD}} · 7d: {{priceFmt .Totals7d.CostUSD}}
       </div>
     </div>
-    <div class="usage-card" title="Projected monthly spend = 7d cost × (30/7)">
-      <div class="usage-card__label">Forecast 30d</div>
-      <div class="usage-card__value">{{priceFmt .ForecastUSD}}</div>
-      <div class="usage-card__sub">from 7d trailing</div>
+    <div class="kpi-item" title="Projected monthly spend = 7d cost × (30/7)">
+      <div class="kpi-item__label">Forecast 30d</div>
+      <div class="kpi-item__value">{{priceFmt .ForecastUSD}}</div>
+      <div class="kpi-item__note">from 7d trailing</div>
     </div>
-    <div class="usage-card" title="Fraction of prompt tokens that hit the provider's cache (Anthropic / Gemini / OpenAI prompt caching)">
-      <div class="usage-card__label">Cache hit</div>
-      <div class="usage-card__value">{{printf "%.1f%%" .CacheHitPct}}</div>
-      <div class="usage-card__sub">
+    <div class="kpi-item" title="Fraction of prompt tokens that hit the provider's cache (Anthropic / Gemini / OpenAI prompt caching)">
+      <div class="kpi-item__label">Cache hit</div>
+      <div class="kpi-item__value">{{printf "%.1f%%" .CacheHitPct}}</div>
+      <div class="kpi-item__note">
         {{tokenShort .Totals.CachedPromptTokens}} cached
       </div>
     </div>
-    <div class="usage-card" title="Fraction of completion tokens that went into internal reasoning (thinking models). Billed as completion but hidden from the user.">
-      <div class="usage-card__label">Reasoning overhead</div>
-      <div class="usage-card__value">{{printf "%.1f%%" .ReasoningPct}}</div>
-      <div class="usage-card__sub">
+    <div class="kpi-item" title="Fraction of completion tokens that went into internal reasoning (thinking models). Billed as completion but hidden from the user.">
+      <div class="kpi-item__label">Reasoning overhead</div>
+      <div class="kpi-item__value">{{printf "%.1f%%" .ReasoningPct}}</div>
+      <div class="kpi-item__note">
         {{tokenShort .Totals.ReasoningTokens}} reasoning
       </div>
     </div>

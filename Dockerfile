@@ -8,7 +8,11 @@ ARG TARGETARCH
 #
 # Override for a one-off local refresh:
 #   docker build --build-arg ASSETS_CACHEBUST=$(date +%s) .
-ARG DS_VERSION=main
+# Pin to a commit SHA rather than @main so jsdelivr's aggressive branch-tip
+# caching can't serve a stale bundle for hours after a DS push. Bump this
+# when you want the latest DS changes; confirm the hash exists at
+# github.com/dzarlax/design-system before committing.
+ARG DS_VERSION=f36e79e50e9341ef5780fb89ec41c1f49e447811
 ARG HTMX_VERSION=2.0.3
 ARG ASSETS_CACHEBUST=pinned
 

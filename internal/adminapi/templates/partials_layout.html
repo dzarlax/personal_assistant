@@ -5,14 +5,18 @@
 <script src="/static/dzarlax.js" defer></script>
 <script src="/static/htmx.min.js" defer></script>
 <style>
-  body { padding: 1.5rem 2rem; margin: 0; max-width: none; }
-  h1   { margin: 0; }
-  .admin-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
-  .admin-header__brand { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; }
-  .admin-tabs { display: flex; gap: 0.25rem; margin-bottom: 1.5rem; border-bottom: 1px solid rgba(0,0,0,0.1); }
-  .admin-tabs__tab { padding: 0.5rem 1rem; color: var(--text-secondary, rgba(0,0,0,0.6)); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .admin-tabs__tab:hover { color: var(--text-primary, #000); }
-  .admin-tabs__tab--active { color: var(--text-primary, #000); border-bottom-color: var(--accent, #3b82f6); font-weight: 600; }
+  /* Admin UI overrides on top of the dzarlax design system. Anything that
+     duplicates DS is deliberately absent — we rely on DS components for:
+        • .navbar / .navbar__brand (page header)
+        • .tab-nav / .tab-nav a.active (page tabs)
+        • .kpi-bar / .kpi-item (metric row on Analytics)
+        • .divider--labeled / .divider__label (chat session breaks)
+        • .card / .card__body / .card__header (content panels)
+        • [hidden] !important + input 16px (iOS zoom fix)
+     Admin pages are full-width — design system navbar/container padding is
+     intentionally bypassed so data-dense tables use every pixel. */
+  body { padding: 0 1.5rem 2rem; margin: 0; max-width: none; }
+
   .admin-section { margin-bottom: 2rem; }
   .filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
   .filters label { display: inline-flex; gap: 0.25rem; align-items: center; }
@@ -21,75 +25,45 @@
   .assign-buttons { margin-top: 0.25rem; }
   .assign-buttons .btn { margin-right: 0.25rem; margin-bottom: 0.25rem; }
   .price-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .preset-banner { padding: 0.75rem 1rem; border-radius: var(--radius, 8px); background: var(--surface-2, #E8E6E3); margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
-  .preset-banner .preset-meta { color: var(--text-secondary, rgba(0,0,0,0.6)); font-size: 0.875rem; margin-top: 0.25rem; }
+  .preset-banner { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--surface-2); margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .preset-banner .preset-meta { color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem; }
   .preset-banner details { margin-top: 0.5rem; font-size: 0.85em; }
-  .preset-banner details > summary { cursor: pointer; color: var(--text-secondary, rgba(0,0,0,0.6)); user-select: none; list-style: none; }
+  .preset-banner details > summary { cursor: pointer; color: var(--text-secondary); user-select: none; list-style: none; }
   .preset-banner details > summary::-webkit-details-marker { display: none; }
   .preset-banner details > summary::before { content: "▸ "; display: inline-block; transition: transform 0.15s; }
   .preset-banner details[open] > summary::before { content: "▾ "; }
-  .preset-banner details .formula { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.04); border-left: 3px solid var(--accent, #888); border-radius: 4px; line-height: 1.45; font-size: 0.9em; }
+  .preset-banner details .formula { margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.04); border-left: 3px solid var(--accent); border-radius: 4px; line-height: 1.45; font-size: 0.9em; }
   .preset-banner details .formula code { background: rgba(0,0,0,0.06); padding: 0 0.25rem; border-radius: 3px; }
   .suggest-btn { margin-left: 0.5rem; }
   .table-wrap { overflow-x: auto; }
   .table-wrap table { width: 100%; }
   .usage-toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-  .usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
-  .usage-card { padding: 0.75rem 1rem; border-radius: var(--radius, 8px); background: var(--surface-2, #E8E6E3); }
-  .usage-card__label { font-size: 0.8em; color: var(--text-secondary, rgba(0,0,0,0.6)); text-transform: uppercase; letter-spacing: 0.05em; }
-  .usage-card__value { font-size: 1.5em; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 0.25rem; }
-  .usage-card__sub { font-size: 0.8em; color: var(--text-secondary, rgba(0,0,0,0.6)); margin-top: 0.25rem; }
-  .usage-chart-wrap { margin-bottom: 1.5rem; padding: 0.75rem; background: rgba(0,0,0,0.03); border-radius: var(--radius, 8px); max-width: 640px; }
-  .usage-chart-title { font-size: 0.85em; margin-bottom: 0.5rem; color: var(--text-secondary, rgba(0,0,0,0.7)); }
+  .usage-chart-wrap { margin-bottom: 1.5rem; padding: 0.75rem; background: rgba(0,0,0,0.03); border-radius: var(--radius); max-width: 640px; }
+  .usage-chart-title { font-size: 0.85em; margin-bottom: 0.5rem; color: var(--text-secondary); }
   .usage-chart { width: 100%; height: auto; display: block; max-height: 140px; }
   .usage-chart + .usage-chart { margin-top: 0.25rem; }
   .usage-chart rect:hover { opacity: 1 !important; }
   .usage-section-h { font-size: 0.95em; margin-top: 1.5rem; margin-bottom: 0.5rem; font-weight: 600; }
   .usage-turns td { vertical-align: top; }
-  .usage-turn__q { color: var(--text-primary, #000); margin-bottom: 0.25rem; font-size: 0.9em; }
-  .usage-turn__a { color: var(--text-secondary, rgba(0,0,0,0.7)); font-size: 0.9em; }
+  .usage-turn__q { color: var(--text); margin-bottom: 0.25rem; font-size: 0.9em; }
+  .usage-turn__a { color: var(--text-secondary); font-size: 0.9em; }
 
-  /* Form input sizing — 16px minimum on iOS stops the page zooming in on
-     focus. Applied generously so every tab's inputs behave the same. */
-  input, select, textarea { font-size: max(16px, 0.95rem); }
-
-  /* The dzarlax design-system assigns display: inline-flex to .btn, which
-     outranks the browser's default [hidden]{display:none}. Without this,
-     hidden toggles on buttons (e.g. Stop in the chat form) do nothing. */
-  [hidden] { display: none !important; }
-
-  /* Responsive base — tuned for phone portrait (<=640). Tabs with many
-     entries become horizontally scrollable; body padding shrinks so
-     content uses the full viewport. Tables inherit scrolling via
-     .table-wrap (already wrapped where needed). */
   @media (max-width: 640px) {
-    body { padding: 0.75rem 0.6rem; }
-    h1 { font-size: 1.35rem; margin-bottom: 0.5rem; }
-    .admin-tabs { overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; margin-bottom: 1rem; }
-    .admin-tabs::-webkit-scrollbar { height: 3px; }
-    .admin-tabs__tab { white-space: nowrap; padding: 0.45rem 0.7rem; font-size: 0.92em; }
+    body { padding: 0 0.75rem 1.5rem; }
     .admin-section { margin-bottom: 1.25rem; }
     .filters { gap: 0.5rem; }
     .filters input[type="text"], .filters input[type="search"] { flex: 1 1 100%; min-width: 0; }
-    .usage-grid { gap: 0.5rem; }
-    .usage-card { padding: 0.6rem 0.75rem; }
-    .usage-card__value { font-size: 1.25em; }
-    .usage-card__label { font-size: 0.72em; }
     .usage-chart-wrap { padding: 0.5rem; }
     .preset-banner { padding: 0.6rem 0.75rem; flex-direction: column; align-items: flex-start; }
-    /* Min 40px touch target on primary actions. */
+    /* Min 40px touch target. */
     .btn { min-height: 40px; }
-    /* Tables that didn't opt into .table-wrap still scroll safely. */
+    /* Tables that didn't opt into .table-wrap scroll safely. */
     table { display: block; overflow-x: auto; max-width: 100%; }
-
-    /* Settings form: stack label/input/button vertically. Same grid but
-       each cell full-width. Save button becomes full-width action too. */
+    /* Settings form stacks label/input/button vertically. */
     .settings-row { grid-template-columns: 1fr; gap: 0.4rem; padding: 0.6rem 0; }
     .settings-row > :nth-child(2) { width: 100%; }
     .settings-input { width: 100% !important; }
-
-    /* MCP server cards: stack label above field so 9rem labels don't
-       squeeze mobile inputs; tighter padding. */
+    /* MCP server cards: labels become small captions above fields. */
     .mcp-card { padding: 0.75rem; }
     .mcp-field { grid-template-columns: 1fr; gap: 0.2rem; }
     .mcp-field label { padding-top: 0; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.03em; }
@@ -98,19 +72,19 @@
 {{end}}
 
 {{define "admin_header"}}
-<header class="admin-header">
-  <h1 class="admin-header__brand">Personal Assistant</h1>
-</header>
+<nav class="navbar">
+  <a class="navbar__brand" href="/">Personal Assistant</a>
+</nav>
 {{template "admin_tabs" .}}
 {{end}}
 
 {{define "admin_tabs"}}
-<nav class="admin-tabs">
-  <a class="admin-tabs__tab {{if eq .ActiveTab "chat"}}admin-tabs__tab--active{{end}}" href="/chat">Chat</a>
-  <a class="admin-tabs__tab {{if eq .ActiveTab "routing"}}admin-tabs__tab--active{{end}}" href="/">Routing & Models</a>
-  <a class="admin-tabs__tab {{if eq .ActiveTab "analytics"}}admin-tabs__tab--active{{end}}" href="/analytics">Analytics</a>
-  <a class="admin-tabs__tab {{if eq .ActiveTab "prompts"}}admin-tabs__tab--active{{end}}" href="/prompts">Prompts</a>
-  <a class="admin-tabs__tab {{if eq .ActiveTab "mcp"}}admin-tabs__tab--active{{end}}" href="/mcp">MCP</a>
-  <a class="admin-tabs__tab {{if eq .ActiveTab "settings"}}admin-tabs__tab--active{{end}}" href="/settings">Settings</a>
+<nav class="tab-nav">
+  <a class="{{if eq .ActiveTab "chat"}}active{{end}}" href="/chat">Chat</a>
+  <a class="{{if eq .ActiveTab "routing"}}active{{end}}" href="/">Routing & Models</a>
+  <a class="{{if eq .ActiveTab "analytics"}}active{{end}}" href="/analytics">Analytics</a>
+  <a class="{{if eq .ActiveTab "prompts"}}active{{end}}" href="/prompts">Prompts</a>
+  <a class="{{if eq .ActiveTab "mcp"}}active{{end}}" href="/mcp">MCP</a>
+  <a class="{{if eq .ActiveTab "settings"}}active{{end}}" href="/settings">Settings</a>
 </nav>
 {{end}}

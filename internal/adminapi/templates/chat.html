@@ -70,12 +70,9 @@
     /* Drag-over visual cue on the whole chat wrap. */
     .chat-wrap.drop-active { outline: 2px dashed var(--accent, #3b82f6); outline-offset: -4px; }
 
-    /* Session break divider — rendered between groups of messages separated
-       by the "New session" button or the 4-hour idle reset. Flat horizontal
-       line with a small date pill centred on it. */
-    .chat-break { display: flex; align-items: center; gap: 0.6rem; margin: 0.75rem 0.25rem; opacity: 0.65; align-self: stretch; }
-    .chat-break::before, .chat-break::after { content: ''; flex: 1; height: 1px; background: rgba(0,0,0,0.15); }
-    .chat-break__label { font-size: 0.72em; padding: 0.1em 0.6em; border-radius: 999px; background: rgba(0,0,0,0.06); white-space: nowrap; }
+    /* Session breaks use the DS .divider--labeled component. The only local
+       touch is align-self: stretch so the divider spans the flex column. */
+    .chat-messages .divider--labeled { align-self: stretch; margin: 0.75rem 0.25rem; }
 
     /* "+ New session" link-style button placed just above the input — visually
        a divider you can create yourself. Muted so it doesn't compete with Send. */
@@ -110,7 +107,7 @@
     <div id="chat-messages" class="chat-messages">
       {{range .History}}
         {{if eq .Role "break"}}
-          <div class="chat-break"><span class="chat-break__label">{{.BreakDate}}{{if .Body}} &middot; {{.Body}}{{end}}</span></div>
+          <div class="divider--labeled"><span class="divider__label">{{.BreakDate}}{{if .Body}} &middot; {{.Body}}{{end}}</span></div>
         {{else}}
           <div class="chat-msg chat-msg--{{.Role}}">
             <div class="chat-msg__meta">
@@ -608,9 +605,9 @@
           var now = new Date();
           var stamp = now.toISOString().slice(0,10) + ' ' + now.toTimeString().slice(0,5);
           var div = document.createElement('div');
-          div.className = 'chat-break';
-          div.innerHTML = '<span class="chat-break__label"></span>';
-          div.querySelector('.chat-break__label').textContent = stamp + ' \u00B7 Cleared';
+          div.className = 'divider--labeled';
+          div.innerHTML = '<span class="divider__label"></span>';
+          div.querySelector('.divider__label').textContent = stamp + ' \u00B7 Cleared';
           messagesEl.appendChild(div);
           scrollToBottom();
           updateLastActions();
