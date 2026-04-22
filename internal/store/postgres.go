@@ -401,17 +401,20 @@ func (p *Postgres) ClearHistory(chatID int64) {
 // DisplayHistory returns the last `limit` non-compacted rows including
 // is_reset session-break markers. Used by the admin web UI to show the
 // full recent conversation with dividers between sessions.
-func (p *Postgres) DisplayHistory(chatID int64, limit int) []HistoryItem {
+func (p *Postgres) DisplayHistory(chatID int64, limit, offset int) []HistoryItem {
 	if limit <= 0 {
 		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx, `
 		SELECT role, content, parts, is_reset, created_at
 		FROM messages
 		WHERE chat_id = $1 AND is_compacted = FALSE
-		ORDER BY id DESC LIMIT $2`,
-		chatID, limit)
+		ORDER BY id DESC LIMIT $2 OFFSET $3`,
+		chatID, limit, offset)
 	if err != nil {
 		return nil
 	}

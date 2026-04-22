@@ -23,7 +23,7 @@ type ChatAgent interface {
 	Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string)) (string, error)
 	ProcessStream(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string), onChunk func(string)) (string, error)
 	GetChatHistory(chatID int64) []llm.Message
-	GetDisplayHistory(chatID int64, limit int) []store.HistoryItem
+	GetDisplayHistory(chatID int64, limit, offset int) []store.HistoryItem
 	ClearChatHistory(chatID int64)
 	PopLastUserTurn(chatID int64) (string, bool)
 }
@@ -77,42 +77,158 @@ type chatMsgView struct {
 }
 
 type chatData struct {
-	ActiveTab string
-	History   []chatMsgView
+	ActiveTab  string
+	History    []chatMsgView
+	HasMore    bool
+	NextOffset int
 }
 
-// displayHistoryLimit is how many rows the Chat page loads on open. Larger
-// than the LLM context window — this is purely for UI scrollback, not
-// context. Capped to keep renders quick on slow connections.
-const displayHistoryLimit = 200
+const (
+	// displayHistoryLimit is how many rows the Chat page loads on open.
+	displayHistoryLimit = 50
+	// displayHistoryChunk is how many rows each "Load earlier" fetch returns.
+	displayHistoryChunk = 50
+)
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	data := chatData{ActiveTab: "chat"}
 	if s.agent != nil {
 		chatID := s.chatIDFor(r)
-		for _, it := range s.agent.GetDisplayHistory(chatID, displayHistoryLimit) {
-			v := chatMsgView{Role: it.Role, Body: it.Content, ImageURLs: it.ImageURLs}
-			if it.Role == "break" {
-				v.BreakDate = it.CreatedAt.Local().Format("2006-01-02 15:04")
-				v.Body = humanizeBreakReason(it.Content)
-			} else if !it.CreatedAt.IsZero() {
-				v.Time = it.CreatedAt.Local().Format("15:04")
-			}
-			// Skip tool-role rows and empty assistant tool-call placeholders —
-			// they'd just be visual noise in a human-facing view.
-			if it.Role == "tool" {
+		// Fetch one extra row to detect whether older messages exist.
+		raw := s.agent.GetDisplayHistory(chatID, displayHistoryLimit+1, 0)
+		if len(raw) > displayHistoryLimit {
+			data.HasMore = true
+			data.NextOffset = displayHistoryLimit
+			raw = raw[:displayHistoryLimit] // trim the probe row
+		}
+		for _, it := range raw {
+			v := itemToView(it)
+			if v == nil {
 				continue
 			}
-			if it.Role == "assistant" && v.Body == "" && len(v.ImageURLs) == 0 {
-				continue
-			}
-			data.History = append(data.History, v)
+			data.History = append(data.History, *v)
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := render(w, viewChat, data); err != nil {
 		s.logger.Error("chat render", "err", err)
 	}
+}
+
+// handleChatHistory serves older messages for the "Load earlier" button.
+// Returns JSON: {html, has_more, next_offset}.
+func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
+	if s.agent == nil {
+		http.Error(w, "agent not configured", http.StatusServiceUnavailable)
+		return
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		fmt.Sscanf(v, "%d", &offset)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	chatID := s.chatIDFor(r)
+	raw := s.agent.GetDisplayHistory(chatID, displayHistoryChunk+1, offset)
+	hasMore := len(raw) > displayHistoryChunk
+	if hasMore {
+		raw = raw[:displayHistoryChunk]
+	}
+
+	var sb strings.Builder
+	for _, it := range raw {
+		v := itemToView(it)
+		if v == nil {
+			continue
+		}
+		if v.Role == "break" {
+			sb.WriteString(`<div class="divider--labeled"><span class="divider__label">`)
+			sb.WriteString(v.BreakDate)
+			if v.Body != "" {
+				sb.WriteString(" &middot; ")
+				sb.WriteString(v.Body)
+			}
+			sb.WriteString(`</span></div>`)
+		} else {
+			role := v.Role
+			if role == "assistant" {
+				role = "bot"
+			}
+			sb.WriteString(`<div class="chat-msg chat-msg--`)
+			sb.WriteString(role)
+			sb.WriteString(`"><div class="chat-msg__meta">`)
+			if v.Role == "user" {
+				sb.WriteString("You")
+			} else {
+				sb.WriteString("Assistant")
+			}
+			if v.Time != "" {
+				sb.WriteString(" &middot; ")
+				sb.WriteString(v.Time)
+			}
+			sb.WriteString(`</div>`)
+			if len(v.ImageURLs) > 0 {
+				sb.WriteString(`<div class="chat-msg__body">`)
+				for _, u := range v.ImageURLs {
+					sb.WriteString(`<img src="`)
+					sb.WriteString(u)
+					sb.WriteString(`" alt="attachment">`)
+				}
+				if v.Body != "" {
+					sb.WriteString(`<div>`)
+					sb.WriteString(v.Body)
+					sb.WriteString(`</div>`)
+				}
+				sb.WriteString(`</div>`)
+			} else if v.Role == "assistant" {
+				// data-md will be picked up by renderMarkdown() on the client.
+				sb.WriteString(`<div class="chat-msg__body md" data-md="`)
+				sb.WriteString(htmlEscapeAttr(v.Body))
+				sb.WriteString(`"></div>`)
+			} else {
+				sb.WriteString(`<div class="chat-msg__body">`)
+				sb.WriteString(v.Body)
+				sb.WriteString(`</div>`)
+			}
+			sb.WriteString(`</div>`)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	_ = enc.Encode(map[string]any{
+		"html":        sb.String(),
+		"has_more":    hasMore,
+		"next_offset": offset + displayHistoryChunk,
+	})
+}
+
+func itemToView(it store.HistoryItem) *chatMsgView {
+	if it.Role == "tool" {
+		return nil
+	}
+	v := &chatMsgView{Role: it.Role, Body: it.Content, ImageURLs: it.ImageURLs}
+	if it.Role == "break" {
+		v.BreakDate = it.CreatedAt.Local().Format("2006-01-02 15:04")
+		v.Body = humanizeBreakReason(it.Content)
+		return v
+	}
+	if it.Role == "assistant" && v.Body == "" && len(v.ImageURLs) == 0 {
+		return nil
+	}
+	if !it.CreatedAt.IsZero() {
+		v.Time = it.CreatedAt.Local().Format("15:04")
+	}
+	return v
+}
+
+func htmlEscapeAttr(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // handleChatStream is a Server-Sent Events endpoint that streams the

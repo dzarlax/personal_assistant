@@ -307,16 +307,19 @@ func (s *SQLite) ClearHistory(chatID int64) {
 // DisplayHistory returns the last `limit` non-compacted rows including
 // is_reset session-break markers. Used by the admin web UI to show the
 // full recent conversation with dividers between sessions.
-func (s *SQLite) DisplayHistory(chatID int64, limit int) []HistoryItem {
+func (s *SQLite) DisplayHistory(chatID int64, limit, offset int) []HistoryItem {
 	if limit <= 0 {
 		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	rows, err := s.db.Query(`
 		SELECT role, content, parts, is_reset, created_at
 		FROM messages
 		WHERE chat_id = ? AND is_compacted = 0
-		ORDER BY id DESC LIMIT ?`,
-		chatID, limit)
+		ORDER BY id DESC LIMIT ? OFFSET ?`,
+		chatID, limit, offset)
 	if err != nil {
 		return nil
 	}

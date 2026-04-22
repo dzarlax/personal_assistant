@@ -70,6 +70,12 @@
     /* Drag-over visual cue on the whole chat wrap. */
     .chat-wrap.drop-active { outline: 2px dashed var(--accent, #3b82f6); outline-offset: -4px; }
 
+    /* Load earlier button at the top of the message list. */
+    .chat-load-earlier-wrap { display: flex; justify-content: center; padding: 0.5rem 0 0.25rem; }
+    .chat-load-earlier { font-size: 0.78em; padding: 0.3em 1em; border-radius: 999px; border: 1px dashed rgba(0,0,0,0.2); background: transparent; color: inherit; cursor: pointer; opacity: 0.65; transition: opacity 0.15s; }
+    .chat-load-earlier:hover { opacity: 1; }
+    .chat-load-earlier:disabled { opacity: 0.35; cursor: default; }
+
     /* Session breaks use the DS .divider--labeled component. The only local
        touch is align-self: stretch so the divider spans the flex column. */
     .chat-messages .divider--labeled { align-self: stretch; margin: 0.75rem 0.25rem; }
@@ -105,6 +111,17 @@
     </div>
 
     <div id="chat-messages" class="chat-messages">
+      {{if .HasMore}}
+      <div class="chat-load-earlier-wrap">
+        <button type="button" id="load-earlier-btn"
+                class="chat-load-earlier"
+                data-offset="{{.NextOffset}}"
+                data-has-more="true"
+                onclick="loadEarlier(this)">
+          Load earlier messages
+        </button>
+      </div>
+      {{end}}
       {{range .History}}
         {{if eq .Role "break"}}
           <div class="divider--labeled"><span class="divider__label">{{.BreakDate}}{{if .Body}} &middot; {{.Body}}{{end}}</span></div>
@@ -615,6 +632,49 @@
         .catch(function(err) { statusEl.textContent = 'new session failed: ' + err.message; })
         .finally(function() { btn.disabled = false; });
     });
+
+    // ============================================================
+    // Load earlier messages (lazy history).
+    // ============================================================
+    async function loadEarlier(btn) {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      var offset = parseInt(btn.dataset.offset, 10) || 0;
+      try {
+        var resp = await fetch('/chat/history?offset=' + offset);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+
+        // Measure scroll-from-bottom before DOM change so we can restore it.
+        var scrollFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop;
+
+        // Insert the returned HTML right after the button wrapper.
+        var wrap = btn.parentElement;
+        var temp = document.createElement('template');
+        temp.innerHTML = data.html;
+        wrap.after(temp.content);
+
+        // Render any markdown in the newly inserted nodes.
+        renderMarkdown();
+
+        // Restore scroll position so the user stays on the same spot.
+        messagesEl.scrollTop = messagesEl.scrollHeight - scrollFromBottom;
+
+        if (data.has_more) {
+          btn.dataset.offset = data.next_offset;
+          btn.textContent = 'Load earlier messages';
+          btn.disabled = false;
+        } else {
+          // No more history — remove the button wrapper entirely.
+          wrap.remove();
+        }
+      } catch (err) {
+        btn.textContent = 'Load earlier messages';
+        btn.disabled = false;
+        statusEl.textContent = 'load failed: ' + (err.message || err);
+      }
+    }
 
     // Initial render + focus.
     renderMarkdown();

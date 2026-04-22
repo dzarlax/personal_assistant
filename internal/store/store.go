@@ -63,7 +63,7 @@ type HistoryItem struct {
 // Implemented by SQLite and Postgres; the in-memory store skips it.
 type DisplayableStore interface {
 	Store
-	DisplayHistory(chatID int64, limit int) []HistoryItem
+	DisplayHistory(chatID int64, limit, offset int) []HistoryItem
 }
 
 // TruncatableStore supports dropping the tail of a conversation. Used by the

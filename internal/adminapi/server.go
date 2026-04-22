@@ -133,6 +133,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/mcp", authed(http.HandlerFunc(s.handleMCP)))
 	mux.Handle("/mcp/", authed(http.HandlerFunc(s.handleMCPRouter))) // dispatches {name}/set | {name}/delete
 	mux.Handle("/chat", authed(http.HandlerFunc(s.handleChat)))
+	mux.Handle("/chat/history", authed(http.HandlerFunc(s.handleChatHistory)))
 	mux.Handle("/chat/stream", authed(http.HandlerFunc(s.handleChatStream)))
 	mux.Handle("/chat/pop", authed(http.HandlerFunc(s.handleChatPop)))
 	mux.Handle("/chat/clear", authed(http.HandlerFunc(s.handleChatClear)))

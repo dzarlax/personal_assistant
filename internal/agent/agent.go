@@ -124,9 +124,9 @@ func (a *Agent) GetChatHistory(chatID int64) []llm.Message {
 // markers and image attachment URLs. Falls back to plain GetHistory when
 // the backing store doesn't implement DisplayableStore. `limit` caps the
 // number of rows fetched; pass 0 for the store default.
-func (a *Agent) GetDisplayHistory(chatID int64, limit int) []store.HistoryItem {
+func (a *Agent) GetDisplayHistory(chatID int64, limit, offset int) []store.HistoryItem {
 	if ds, ok := a.store.(store.DisplayableStore); ok {
-		return ds.DisplayHistory(chatID, limit)
+		return ds.DisplayHistory(chatID, limit, offset)
 	}
 	out := make([]store.HistoryItem, 0)
 	for _, m := range a.store.GetHistory(chatID) {
