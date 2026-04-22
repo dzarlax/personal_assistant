@@ -214,12 +214,12 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 		width      = 520
 		padLeft    = 52 // room for Y-axis labels
 		padRight   = 10
-		p1Top      = 18  // panel 1 plot area top
-		p1Bot      = 108 // panel 1 plot area bottom
-		sepY       = 126 // separator line between panels
-		p2Top      = 140 // panel 2 plot area top
-		p2Bot      = 228 // panel 2 plot area bottom
-		totalH     = 248 // total SVG height (includes x-axis labels row)
+		p1Top      = 12  // panel 1 plot area top
+		p1Bot      = 76  // panel 1 plot area bottom
+		sepY       = 90  // separator line between panels
+		p2Top      = 102 // panel 2 plot area top
+		p2Bot      = 166 // panel 2 plot area bottom
+		totalH     = 184 // total SVG height (includes x-axis labels row)
 	)
 	c := dailyChart{
 		Width:       width,
